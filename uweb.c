@@ -4,45 +4,70 @@
 // 
 // Sources : 
 //              - nweb23.c from IBM and Nigel Griffiths
-//              - µweb.cpp from Ph. Jounin
+//              - mweb.cpp from Ph. Jounin
 // ---------------------------------------------------------
 
 
 
 
-#define MWEB_VERSION "1.1"
+#define UWEB_VERSION "1.1"
 
 const char SYNTAX[] = ""
-"µweb: Usage\n"
-"\n mweb [-4] [-6] [-p port] [-d dir] [-i addr] [-c content-type]"
+"uweb: Usage\n"
+"\n uweb [-4] [-6] [-p port] [-d dir] [-i addr] [-c content-type] [-g msec]"
 "\n      [-s max connections] [-verbose]\n"
 "\n      -4   IPv4 only"
 "\n      -6   IPv6 only"
 "\n      -c   content-type assigned to unknown files"
 "\n           (default: reject unregistered types)"
 "\n      -d   base directory for content (default is current directory)"
+"\n      -g   slow down transfer by waiting for x msc between two frames"
 "\n      -i   listen only this address"
 "\n      -p   HTTP port (defaut is 8080)"
 "\n      -s   maximum simultaneous connection (default is 1024)"
 "\n      -v   verbose"
 "\n";
 
+#define _CRT_SECURE_NO_WARNINGS	1
+#define _CRT_SECURE_NO_DEPRECATE
+
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
 #include <string.h>
+#include <assert.h>
 
 
 // ---------------------------------------------------------
 // Windows portability tweaks
 // ---------------------------------------------------------
 
-#ifdef WINDOWS
+#ifdef _MSC_VER
+
+
+#undef UNICODE
+
+// #include <windows.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <strsafe.h>
+#include <process.h>
+
+#define snprintf _snprintf 
+#define vsnprintf _vsnprintf 
+#define strcasecmp _stricmp 
+#define strncasecmp _strnicmp 
+
 #define _FILE_OFFSET_BITS 64
+typedef HANDLE THREAD_ID;
+typedef unsigned THREAD_RET;
+
+#define INVALID_FILE_VALUE NULL
+#define INVALID_THREAD_VALUE (THREAD_ID) -1L
 
 BOOL IsThreadAlive (THREAD_ID ThId)    { return   WaitForSingleObject(ThId, 0) == WAIT_OBJECT_0 ; }
-void ssleep (int ssec)                 { Sleep (ssec * 1000); }
+void ssleep (int msec)                 { Sleep (msec); }
 
 
 #endif
@@ -58,7 +83,6 @@ void ssleep (int ssec)                 { Sleep (ssec * 1000); }
 #include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
-#include <assert.h>
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -82,7 +106,7 @@ typedef long int DWORD;
 enum { FALSE=0, TRUE };
 
 int GetLastError(void)     { return errno; }
-void ssleep (int ssec)     { sleep (ssec); }
+void ssleep (int msec)     { sleep (msec / 1000); usleep ((msec % 1000) * 1000); }
 int min(int a, int b)      { return (a < b ? a : b); }
 
 
@@ -112,19 +136,19 @@ int CharUpperBuff(char *s, int n)     {int p=0;  while (*s!=0 && n-->0)  { if (i
 
 int GetFullPathName(const char *lpFileName, int nBufferLength, char *lpBuffer, char **p)
 {
-int Rc;
-  if ( realpath (lpFileName, lpBuffer) == NULL) 
-                return 0;
-  if (p!=NULL)   
-        *p = strrchr (lpBuffer, '/'); 
-return strlen(lpBuffer);
+	int Rc;
+	if ( realpath (lpFileName, lpBuffer) == NULL) 
+		return 0;
+	if (p!=NULL)   
+		*p = strrchr (lpBuffer, '/'); 
+	return strlen(lpBuffer);
 }
 
 int GetCurrentDirectory (int nBufferLength, char *lpBuffer) 
 {
-char *p;
-   p = getcwd (lpBuffer, nBufferLength);
-   return p==NULL ? 0 : strlen (lpBuffer);
+	char *p;
+	p = getcwd (lpBuffer, nBufferLength);
+	return p==NULL ? 0 : strlen (lpBuffer);
 }
 
 int SetCurrentDirectory (const char *lpPathName)  { return chdir (lpPathName); }
@@ -135,25 +159,25 @@ typedef pthread_t THREAD_ID;
 typedef void *    THREAD_RET;
 #define INVALID_THREAD_VALUE ((THREAD_ID) (-1))
 
-THREAD_ID beginthreadex (void *security, unsigned stack_size,  THREAD_RET (* lpStartAddress) (void*), void *lpParameter, unsigned init_flag, THREAD_ID *pThId)
+THREAD_ID _beginthreadex (void *security, unsigned stack_size,  THREAD_RET (* lpStartAddress) (void*), void *lpParameter, unsigned init_flag, THREAD_ID *pThId)
 { 
-int rc;
-    assert (security==NULL);
-    assert (stack_size == 0);
-    assert (init_flag == 0);
-    rc =  pthread_create (pThId, NULL, lpStartAddress, lpParameter);
-    return (rc==0) ? *pThId : INVALID_THREAD_VALUE;
+	int rc;
+	assert (security==NULL);
+	assert (stack_size == 0);
+	assert (init_flag == 0);
+	assert (pThId == NULL);
+	return  pthread_create (pThId, NULL, lpStartAddress, lpParameter);
 }
 
 BOOL IsThreadAlive (THREAD_ID ThId)
 {
-void *rc;
-    if ( pthread_tryjoin_np (ThId, &rc) == 0 )
-    { 
-             pthread_join (ThId, &rc) ;
-             return FALSE;
-    }
-   return TRUE;
+	void *rc;
+	if ( pthread_tryjoin_np (ThId, &rc) == 0 )
+	{ 
+		pthread_join (ThId, &rc) ;
+		return FALSE;
+	}
+	return TRUE;
 }
 
 int GetExitCodeThread (THREAD_ID ThId, DWORD *rez) { *rez=0 ; return 0; }
@@ -168,9 +192,9 @@ int CloseHandle (THREAD_ID ThId)             { return 0; }
 // default parameters
 #define DEFAULT_BURST_PKTS    2
 #define DEFAULT_BUFLEN       (1448*DEFAULT_BURST_PKTS)    // buffer size for reading HTTP command and file content (2 pkts of 1500 bytes)
-#define DEFAULT_PORT         "8080"    
-#define DEFAULT_MAXTHREADS   1024        // maximum simultaneous connections
-#define DEFAULT_HTMLFILE    "index.html" // if request is "GET / HTTP/1.1"
+char DEFAULT_PORT[] =  "8080"    ;
+#define DEFAULT_MAXTHREADS   1024             // maximum simultaneous connections
+char DEFAULT_HTMLFILE[] = "index.html"; // if request is "GET / HTTP/1.1"
 
 // params passed to logger funcion
 enum { LOG_BEGIN, LOG_END, };		// 
@@ -180,13 +204,13 @@ enum { LOG_BEGIN, LOG_END, };		//
 // ---------------------------------------------------------
 // managed status code
 enum     { HTTP_OK=200, 
-	   HTTP_PARTIAL=206, 
-	   HTTP_BADREQUEST=400, 
-	   HTTP_SECURITYVIOLATION=403, 
-	   HTTP_NOTFOUND=404, 
-	   HTTP_METHODNOTALLOWED=405, 
-	   HTTP_TYPENOTSUPPORTED=415, 
-	   HTTP_SERVERERROR=500 };
+           HTTP_PARTIAL=206, 
+		   HTTP_BADREQUEST=400, 
+		   HTTP_SECURITYVIOLATION=403, 
+		   HTTP_NOTFOUND=404, 
+		   HTTP_METHODNOTALLOWED=405, 
+		   HTTP_TYPENOTSUPPORTED=415, 
+		   HTTP_SERVERERROR=500 };
 
 struct S_ErrorCodes
 {
@@ -196,12 +220,12 @@ struct S_ErrorCodes
 }
 sErrorCodes[] = 
 {	
-	{ HTTP_BADREQUEST,	  "Bad Request",            "HTTP malformed request syntax.",  },
-	{ HTTP_NOTFOUND,	  "Not Found",              "The requested URL was not found on this server.",  },
-	{ HTTP_SECURITYVIOLATION, "Forbidden",              "Directory traversal attack detected.",             },
-	{ HTTP_TYPENOTSUPPORTED,  "Unsupported Media Type", "The requested file type is not allowed on this simple static file webserver.", },
-	{ HTTP_METHODNOTALLOWED,  "Method Not Allowed",     "The requested file operation is not allowed on this simple static file webserver.", },
-	{ HTTP_SERVERERROR,       "Internal Server Error",  "Internal Server Error, can not access to file anymore.", },
+	{ HTTP_BADREQUEST,	      "Bad Request",            "HTTP malformed request syntax.",  },
+    { HTTP_NOTFOUND,	      "Not Found",              "The requested URL was not found on this server.",  },
+    { HTTP_SECURITYVIOLATION, "Forbidden",              "Directory traversal attack detected.",             },
+    { HTTP_TYPENOTSUPPORTED,  "Unsupported Media Type", "The requested file type is not allowed on this simple static file webserver.", },
+    { HTTP_METHODNOTALLOWED,  "Method Not Allowed",     "The requested file operation is not allowed on this simple static file webserver.", },
+    { HTTP_SERVERERROR,       "Internal Server Error",  "Internal Server Error, can not access to file anymore.", },
 };
 
 const char szHTMLErrFmt[]  = "<html><head>\n<title>%d %s</title>\n</head><body>\n<h1>%s</h1>\n%s\n</body></html>\n";
@@ -210,35 +234,35 @@ const char szHTTPDataFmt[] = "HTTP/1.1 %d %s\nServer: mweb-%s\nContent-Length: %
 // util: send an pre formated error code
 int HTTPSendError(SOCKET skt, int HttpStatusCode)
 {
-char szContentBuf[512], szHTTPHeaders[256];
-int  ark;
-int  iResult;
+	char szContentBuf[512], szHTTPHeaders[256];
+	int  ark;
+	int  iResult;
 
 	// search error code in sErrorCodes array
 	for ( ark=0 ; sErrorCodes[ark].status_code != 0  && sErrorCodes[ark].status_code!=HttpStatusCode ; ark++ );
-        assert (sErrorCodes[ark].status_code==HttpStatusCode);  // exit if error code not found (bug)
+	assert (sErrorCodes[ark].status_code==HttpStatusCode);  // exit if error code not found (bug)
 
 	StringCchPrintf (szContentBuf, sizeof szContentBuf, szHTMLErrFmt, 
-			sErrorCodes[ark].status_code, 
-			sErrorCodes[ark].txt_content, 
-			sErrorCodes[ark].txt_content, 
-			sErrorCodes[ark].html_content );
-        // now we have the string, get its length and send headers and string
-        StringCchPrintf (szHTTPHeaders, sizeof szHTTPHeaders, szHTTPDataFmt,
-                        sErrorCodes[ark].status_code,
-                        sErrorCodes[ark].txt_content,
-                        MWEB_VERSION,
-                        (DWORD64) strlen (szContentBuf),
-                        "text/html" );
+		sErrorCodes[ark].status_code, 
+		sErrorCodes[ark].txt_content, 
+		sErrorCodes[ark].txt_content, 
+		sErrorCodes[ark].html_content );
+	// now we have the string, get its length and send headers and string
+	StringCchPrintf (szHTTPHeaders, sizeof szHTTPHeaders, szHTTPDataFmt,
+		sErrorCodes[ark].status_code,
+		sErrorCodes[ark].txt_content,
+		UWEB_VERSION,
+		(DWORD64) strlen (szContentBuf),
+		"text/html" );
 	iResult = send (skt, szHTTPHeaders, strlen (szHTTPHeaders), 0);
 	iResult = send (skt, szContentBuf,  strlen (szContentBuf),  0);
-return iResult;
+	return iResult;
 } // HTTPSendError 
 
-// ---------------------------------------------------------
-// Operationnal states : settings, HTML types  and thread data
-// ---------------------------------------------------------
-// Global Settings 
+  // ---------------------------------------------------------
+  // Operationnal states : settings, HTML types  and thread data
+  // ---------------------------------------------------------
+  // Global Settings 
 struct S_Settings
 {
 	BOOL  bVerbose;
@@ -249,7 +273,7 @@ struct S_Settings
 	char  *szDefaultHtmlFile;
 	char  *szDefaultContentType;	// all files accepted with this content-type
 	int    max_threads;				// maximum simultaneous connections
-        BOOL   slow_down;               // add a 1 second pause after each frame
+	int    slow_down;               // msec to wait between two frames
 }
 sSettings = { FALSE, FALSE, FALSE, DEFAULT_PORT, NULL,  DEFAULT_HTMLFILE, NULL, DEFAULT_MAXTHREADS, FALSE };
 
@@ -271,24 +295,24 @@ struct S_ThreadData
 	time_t      tStartTrf;			// when the transfer has started
 
 	THREAD_ID   ThreadId;		        // thread data (posix) or Id (Windows)
-        BOOL        bThreadUp;                  // is thread running ?
+	BOOL        bThreadUp;                  // is thread running ?
 
-        // link
-        struct S_ThreadData *next;
-        struct S_ThreadData *prev;
+											// link
+	struct S_ThreadData *next;
+	struct S_ThreadData *prev;
 }
 *pThreadDataHead;			// array allocated in main
 
 int nbThreads = 0;                      // # running threads
 
 
-// known extensions for HTML content-type resolution
-// from https://developer.mozilla.org/nl/docs/Web/HTTP/Basics_of_HTTP/MIME_types/Complete_list_of_MIME_types
-// automatially generated from this url with the excel formula : 
-// IF(C2="";CONCAT(" { """;A2;"""";", """;C1;""" }, ");CONCAT(" { """;A2;"""";", """;C2;""" }, "))
+										// known extensions for HTML content-type resolution
+										// from https://developer.mozilla.org/nl/docs/Web/HTTP/Basics_of_HTTP/MIME_types/Complete_list_of_MIME_types
+										// automatially generated from this url with the excel formula : 
+										// IF(C2="";CONCAT(" { """;A2;"""";", """;C1;""" }, ");CONCAT(" { """;A2;"""";", """;C2;""" }, "))
 struct {
-	char *ext;
-	char *filetype;
+	const char *ext;
+	const char *filetype;
 } sHtmlTypes[] = {
 	{ ".aac", "audio/aac" },
 	{ ".abw", "application/x-abiword" },
@@ -355,10 +379,12 @@ struct {
 	{ ".3g2", "video/3gpp2" },
 	{ ".7z", "application/x-7z-compressed" },
 
-	// add-ons
-	{ ".mp4",  "video/mpeg" }, 
-	{ ".mpg",  "video/mpeg" }, 
-	{ ".iso",  "application/iso" }, 
+// add-ons
+{ ".mp4",  "video/mpeg" }, 
+{ ".mpg",  "video/mpeg" }, 
+{ ".iso",  "application/iso" }, 
+{ ".txt",  "application/text" }, 
+{ ".text",  "application/text" }, 
 };
 
 
@@ -370,12 +396,14 @@ struct {
 /////////////////////////////////////////////////////////////////
 
 
-// Function LastErrorText : THREAD UNSAFE
+// Function LastErrorText. Thread unsafe
 // A wrapper for FormatMessage : retrieve the message text for a system-defined error
 char *LastErrorText(void)
 {
 static char szLastErrorText[512];
-     strerror_r (errno, szLastErrorText, sizeof szLastErrorText);
+	// strerror_r (errno, szLastErrorText, sizeof szLastErrorText);
+	strncpy (szLastErrorText, strerror (errno), sizeof szLastErrorText);
+        szLastErrorText[sizeof szLastErrorText - 1] = 0;
 	return szLastErrorText;
 } // LastErrorText
 
@@ -384,9 +412,8 @@ static char szLastErrorText[512];
   // report an error to console using puts
 void SVC_ERROR(const char *szFmt, ...)
 {
-	char szBuf[256];
 	va_list args;
-	if (sSettings.bVerbose)
+	// if (sSettings.bVerbose)
 	{
 		va_start(args, szFmt);
 		vfprintf(stderr, szFmt, args);
@@ -396,21 +423,21 @@ void SVC_ERROR(const char *szFmt, ...)
 } // SVC_ERROR
 
 
-/////////////////////////////////////////////////////////////////
-// utilities socket operations :
-//	 - check that socket is still opened by listen at it
-//	 - return MSS
-//      - bind its socket
-//      - init WSA socket
-//      - Check if IPv6 is enabled
-//      - send HTTP error
-/////////////////////////////////////////////////////////////////
+  /////////////////////////////////////////////////////////////////
+  // utilities socket operations :
+  //	 - check that socket is still opened by listen at it
+  //	 - return MSS
+  //      - bind its socket
+  //      - init WSA socket
+  //      - Check if IPv6 is enabled
+  //      - send HTTP error
+  /////////////////////////////////////////////////////////////////
 
-// a Windows wrapper to  call WSAStartup...
+  // a Windows wrapper to  call WSAStartup...
 int InitSocket()
 {
-WSADATA  wsa;
-int      iResult;
+	WSADATA  wsa;
+	int      iResult;
 	iResult = WSAStartup(MAKEWORD(2, 0), &wsa);
 	iResult = 1;
 	if (iResult < 0)
@@ -436,12 +463,12 @@ int IsTransferCancelledByPeer(SOCKET skt)
 } // IsTransferCancelledByPeer
 
 
-// return the max segment size for this socket
+  // return the max segment size for this socket
 int GetSocketMSS(SOCKET skt)
 {
-int tcp_mss = 0;
-int opt_len = sizeof tcp_mss;
-int iResult;
+	int tcp_mss = 0;
+	int opt_len = sizeof tcp_mss;
+	int iResult;
 
 	iResult = getsockopt(skt, IPPROTO_TCP, TCP_MAXSEG, (char*) & tcp_mss , & opt_len);
 	if (iResult < 0)
@@ -453,7 +480,7 @@ int iResult;
 } // GetSocketMSS
 
 
-// return TRUE IPv6 is enabled on the local system
+  // return TRUE IPv6 is enabled on the local system
 BOOL IsIPv6Enabled(void)
 {
 	SOCKET s = INVALID_SOCKET;
@@ -465,37 +492,38 @@ BOOL IsIPv6Enabled(void)
 	return s != INVALID_SOCKET;
 } // IsIPv6Enabled
 
-// debug
+  // debug
 int dump_addrinfo(ADDRINFO *runp)
 {
-        char hostbuf[50], portbuf[10];
-        int e;
+	char hostbuf[50], portbuf[10];
+	int e;
 
-                printf("family: %d, socktype: %d, protocol: %d, ", runp->ai_family, runp->ai_socktype, runp->ai_protocol);
-                e = getnameinfo(
-                        runp->ai_addr, runp->ai_addrlen,
-                        hostbuf, sizeof(hostbuf),
-                        portbuf, sizeof(portbuf),
-                        NI_NUMERICHOST | NI_NUMERICSERV
-                );
-                printf("host: %s, port: %s\n", hostbuf, portbuf);
+	printf("family: %d, socktype: %d, protocol: %d, ", runp->ai_family, runp->ai_socktype, runp->ai_protocol);
+	e = getnameinfo(
+		runp->ai_addr, runp->ai_addrlen,
+		hostbuf, sizeof(hostbuf),
+		portbuf, sizeof(portbuf),
+		NI_NUMERICHOST | NI_NUMERICSERV
+	);
+	printf("host: %s, port: %s\n", hostbuf, portbuf);
+return 0;
 }
 
 
-  // create a listening socket
-  // and bind it to the HTTP port
+// create a listening socket
+// and bind it to the HTTP port
 SOCKET BindServiceSocket(const char *port, const char *sz_bind_addr)
 {
-SOCKET             sListenSocket = INVALID_SOCKET;
-int                Rc;
-ADDRINFO           Hints, *res, *cur;
+	SOCKET             sListenSocket = INVALID_SOCKET;
+	int                Rc;
+	ADDRINFO           Hints, *res, *cur;
 
 	memset(&Hints, 0, sizeof Hints);
 	if (sSettings.bIPv4)     	Hints.ai_family = AF_INET;   // force IPv4
 	else if (sSettings.bIPv6)  	Hints.ai_family = AF_INET6;   // force IPv6
 	else                            Hints.ai_family = AF_UNSPEC;    // use IPv4 or IPv6, whichever
 
-	 // resolve the address and port we want to bind the server
+																	// resolve the address and port we want to bind the server
 	Hints.ai_socktype = SOCK_STREAM;
 	Hints.ai_flags = AI_PASSIVE;     // fill in my IP for me
 	Rc = getaddrinfo(sz_bind_addr, port, &Hints, &res);
@@ -505,15 +533,15 @@ ADDRINFO           Hints, *res, *cur;
 		return INVALID_SOCKET;
 	}
 
-        // if getaddr_info returns only one entry: take it (option -i, -4, -6 or ipv4 only host)
-        // else search for  the ipv6 socket (then deactivate the option IPV6_V6ONLY)
-        if (res->ai_next == NULL)     cur = res;
-        else                          for (cur = res ; cur!=NULL  &&  cur->ai_family!=AF_INET6 ; cur = cur->ai_next);
-        assert (cur!=NULL);
+	// if getaddr_info returns only one entry: take it (option -i, -4, -6 or ipv4 only host)
+	// else search for  the ipv6 socket (then deactivate the option IPV6_V6ONLY)
+	if (res->ai_next == NULL)     cur = res;
+	else                          for (cur = res ; cur!=NULL  &&  cur->ai_family!=AF_INET6 ; cur = cur->ai_next);
+	assert (cur!=NULL);
 
-        if (sSettings.bVerbose) dump_addrinfo (cur);
+	if (sSettings.bVerbose) dump_addrinfo (cur);
 
-        // now open socket based on either selection
+	// now open socket based on either selection
 	sListenSocket = socket(cur->ai_family, cur->ai_socktype, cur->ai_protocol);
 	if (sListenSocket == INVALID_SOCKET)
 	{
@@ -521,33 +549,31 @@ ADDRINFO           Hints, *res, *cur;
 		return INVALID_SOCKET;
 	}
 
-         // now allow both IPv6 and IPv4 by disabling IPV6_ONLY (necessary since Vista)
-	 // http://msdn.microsoft.com/en-us/library/windows/desktop/bb513665(v=vs.85).aspx
-	 // does not work under XP --> do not check return code
-        if (res->ai_next != NULL)  // did we select the ipv6 entry ?
-        {
-	     int Param = FALSE;
-	     Rc = setsockopt(sListenSocket, IPPROTO_IPV6, IPV6_V6ONLY, (char*)& Param, sizeof Param);
-printf ("setock opt %d, errno %d\n", Rc, errno);
-perror("");
-         }
+	// now allow both IPv6 and IPv4 by disabling IPV6_ONLY (necessary since Vista)
+	// http://msdn.microsoft.com/en-us/library/windows/desktop/bb513665(v=vs.85).aspx
+	// does not work under XP --> do not check return code
+	if (res->ai_next != NULL)  // did we select the ipv6 entry ?
+	{
+		int Param = FALSE;
+		Rc = setsockopt(sListenSocket, IPPROTO_IPV6, IPV6_V6ONLY, (char*)& Param, sizeof Param);
+	}
 
-	 // bind the socket to the active interface
-	 Rc = bind(sListenSocket, cur->ai_addr, cur->ai_addrlen);
-	 if (Rc == INVALID_SOCKET)
-	 {
-		   SVC_ERROR("Error : Can't not bind socket\nError %d (%s)", GetLastError(), LastErrorText());
-		   closesocket(sListenSocket);
-		   return INVALID_SOCKET;
-	 }
-	 // create the listen queue
-	 Rc = listen(sListenSocket, 5);
-	 if (Rc == -1)
-	 {
-		   SVC_ERROR("Error : on listen\nError %d (%s)", GetLastError(), LastErrorText());
-		   closesocket(sListenSocket);
-		   return INVALID_SOCKET;
-	 }
+	// bind the socket to the active interface
+	Rc = bind(sListenSocket, cur->ai_addr, cur->ai_addrlen);
+	if (Rc == INVALID_SOCKET)
+	{
+		SVC_ERROR("Error : Can't not bind socket\nError %d (%s)", GetLastError(), LastErrorText());
+		closesocket(sListenSocket);
+		return INVALID_SOCKET;
+	}
+	// create the listen queue
+	Rc = listen(sListenSocket, 5);
+	if (Rc == -1)
+	{
+		SVC_ERROR("Error : on listen\nError %d (%s)", GetLastError(), LastErrorText());
+		closesocket(sListenSocket);
+		return INVALID_SOCKET;
+	}
 
 	freeaddrinfo(res);
 	return   Rc == INVALID_SOCKET ? Rc : sListenSocket;
@@ -556,41 +582,43 @@ perror("");
 
 
 
-/////////////////////////////////////////////////////////////////
-// Thread management
-/////////////////////////////////////////////////////////////////
+  /////////////////////////////////////////////////////////////////
+  // Thread management
+  /////////////////////////////////////////////////////////////////
 
-// Do Some cleanup on terminated Threads (use pThreadDataHead as global)
+  // Do Some cleanup on terminated Threads (use pThreadDataHead as global)
 int ManageTerminatedThreads (void)
 {
-int ark=0;
-DWORD  iResult;
-struct S_ThreadData *pCur;
+	int ark=0;
+	DWORD  iResult;
+	struct S_ThreadData *pCur, *pNext;
 
-    // check if threads have ended and free resources
-    for (pCur=pThreadDataHead ;  pCur!=NULL ; pCur=pCur->next )
-    {
-        if (pCur->bThreadUp &&  ! IsThreadAlive (pCur->ThreadId))
-        {
-           pCur->bThreadUp = FALSE;
-           if (pCur->buf!=NULL)    free (pCur->buf);
-           if (pCur->hFile!=NULL)  fclose (pCur->hFile);
+	// check if threads have ended and free resources
+	for (pCur=pThreadDataHead ;  pCur!=NULL ; pCur=pNext )
+	{
+		pNext = pCur->next;   // pCur may be freed
+		if (pCur->bThreadUp &&  ! IsThreadAlive (pCur->ThreadId))
+		{
+			pCur->bThreadUp = FALSE;
+			if (pCur->buf!=NULL)    free (pCur->buf);
+			if (pCur->hFile!=NULL)  fclose (pCur->hFile);
 
-           GetExitCodeThread (pCur->ThreadId, &iResult);
-           CloseHandle (pCur->ThreadId);
-           ark++;
+			GetExitCodeThread (pCur->ThreadId, &iResult);
+			CloseHandle (pCur->ThreadId);
+			ark++;
 
-           // detach pCur
-           if (pCur->next!=NULL)  pCur->next->prev = pCur->prev;
-           if (pCur->prev!=NULL)  pCur->prev->next = pCur->next;
-           else                   pThreadDataHead  = pCur->next;
-           // free record 
-printf("freeing thread %p\n", pCur);
-           free (pCur);
-           --nbThreads;
-        }
-    }
-return ark;
+			// detach pCur
+			if (pCur->next!=NULL)  pCur->next->prev = pCur->prev;
+			if (pCur->prev!=NULL)  pCur->prev->next = pCur->next;
+			else                   pThreadDataHead  = pCur->next;
+			// free record 
+			printf("freeing thread %p\n", pCur);
+			free (pCur);
+
+			--nbThreads;
+		}
+	}
+	return ark;
 } // ManageTerminatedThreads
 
 
@@ -604,39 +632,39 @@ return ark;
   // a minimal reporting
 int LogTransfer(const struct S_ThreadData *pData, int when, int http_status)
 {
-char szAddr[INET6_ADDRSTRLEN], szServ[NI_MAXSERV];
-char szBuf[256];
-int Rc;
+	char szAddr[INET6_ADDRSTRLEN], szServ[NI_MAXSERV];
+	char szBuf[256];
+	int Rc;
 
 	if (!sSettings.bVerbose)  return 0;
 
-        strcpy (szAddr, "");
-        strcpy (szServ, "");
+	strcpy (szAddr, "");
+	strcpy (szServ, "");
 	Rc = getnameinfo((LPSOCKADDR)& pData->sa, sizeof pData->sa,
-				szAddr, sizeof szAddr,
-				szServ, sizeof szServ,
-				NI_NUMERICHOST | NI_NUMERICSERV);
-        if (Rc!=0) 
-        {
-             errno = Rc;
-	     SVC_ERROR("gtenameinfo failed.\nError %d (%s)", Rc, LastErrorText());
-        }
-        // do not use ipv4 mapped address
-        if (* (unsigned short *) szAddr == * (unsigned short *) "::")
-             memmove (szAddr, & szAddr[sizeof "::ffff:" - 1], sizeof "255.255.255.255");
+		szAddr, sizeof szAddr,
+		szServ, sizeof szServ,
+		NI_NUMERICHOST | NI_NUMERICSERV);
+	if (Rc!=0) 
+	{
+		errno = Rc;
+		SVC_ERROR("gtenameinfo failed.\nError %d (%s)", Rc, LastErrorText());
+	}
+	// do not use ipv4 mapped address
+	if (* (unsigned short *) szAddr == * (unsigned short *) "::")
+		memmove (szAddr, & szAddr[sizeof "::ffff:" - 1], sizeof "255.255.255.255");
 
 	switch (when)
 	{
-		case LOG_BEGIN:
-			StringCchPrintf(szBuf, sizeof szBuf, "From %s:%s, GET %s. burst size %d", 
-                                        szAddr, szServ, pData->file_name, pData->buflen);
-			break;
+	case LOG_BEGIN:
+		StringCchPrintf(szBuf, sizeof szBuf, "From %s:%s, GET %s. burst size %d", 
+			szAddr, szServ, pData->file_name, pData->buflen);
+		break;
 
-		case LOG_END:
-			StringCchPrintf(szBuf, sizeof szBuf, "From %s:%s, GET %s: %I64d bytes sent, status : %d",
-				        szAddr, szServ, pData->file_name,
-				        pData->qwFileCurrentPos, http_status );
-			break;
+	case LOG_END:
+		StringCchPrintf(szBuf, sizeof szBuf, "From %s:%s, GET %s: %I64d bytes sent, status : %d",
+			szAddr, szServ, pData->file_name,
+			pData->qwFileCurrentPos, http_status );
+		break;
 	}
 	return	puts(szBuf);
 } // LogTransfer
@@ -647,7 +675,7 @@ int Rc;
   // Get extension type 
 char *GetHtmlContentType(const char *os_extension)
 {
-int ark;
+	int ark;
 
 	if (os_extension == NULL)  
 		return  sSettings.szDefaultContentType;
@@ -660,7 +688,7 @@ int ark;
 		SVC_ERROR("Unregistered file extension");
 		return sSettings.szDefaultContentType;		// NULL if not overridden
 	}
-	return sHtmlTypes[ark].filetype;
+	return (char *) sHtmlTypes[ark].filetype;
 } // GetHtmlContentType
 
 
@@ -669,14 +697,14 @@ int ark;
   // HTTP formatting is GET _space_ file name ? arguments _space_ HTTP/VERSION _end of line_
 BOOL ExtractFileName(const char *szHttpRequest, int request_length, char *szFileName, int name_size)
 {
-const char *pCur=NULL, *pEnd;
-int         len, url_length;
+	const char *pCur=NULL, *pEnd;
+	int         len, url_length;
 
 	// check that string is nul terminated (ok already done in caller)
 	if (strnlen(szHttpRequest, request_length) == request_length)
 		return FALSE;
 
-    // check that request is long enough to find the file name
+	// check that request is long enough to find the file name
 	if (request_length < sizeof "GET / HTTP/1.x\n" - 1) return FALSE;
 
 
@@ -704,11 +732,11 @@ int         len, url_length;
 
 
 
-// Read request and extract file name
-// if error, can return abruptely: resources freed in calling funtions
+  // Read request and extract file name
+  // if error, can return abruptely: resources freed in calling funtions
 int DecodeHttpRequest(struct S_ThreadData *pData, int request_length)
 {
-char     szCurDir[MAX_PATH];
+	char     szCurDir[MAX_PATH];
 
 	// double check buffer overflow
 	if (request_length >= (int)pData->buflen)
@@ -736,7 +764,7 @@ char     szCurDir[MAX_PATH];
 	else
 		pData->file_type = strrchr(pData->file_name, '.');	// search for '.'
 
-	// sanity check : do not go backward in the directory structure
+															// sanity check : do not go backward in the directory structure
 	GetFullPathName(".", MAX_PATH, szCurDir, NULL);
 #ifdef UNSAFE__DEBUG
 	printf("file to be retreived is %s, path is %s, file is %s, cur dir is %s\n", pData->long_filename, pData->buf, pData->file_name, szCurDir);
@@ -746,7 +774,7 @@ char     szCurDir[MAX_PATH];
 		SVC_ERROR("directory traversal detected");
 		return HTTP_SECURITYVIOLATION;
 	}
-return HTTP_OK;
+	return HTTP_OK;
 } // DecodeHttpRequest
 
 
@@ -754,20 +782,20 @@ return HTTP_OK;
 
 
 
-// Thread base
+  // Thread base
 THREAD_RET HttpTransferThread(void * lpParam)
 {
-int      bytes_rcvd;
-DWORD    bytes_read;
-char     *pContentType;
-struct S_ThreadData *pData = (struct S_ThreadData *)  lpParam;
-int      iResult = -1;
-int      iHttpStatus=HTTP_BADREQUEST;
-int      tcp_mss;
+	int      bytes_rcvd;
+	DWORD    bytes_read;
+	char     *pContentType;
+	struct S_ThreadData *pData = (struct S_ThreadData *)  lpParam;
+	int      iResult = -1;
+	int      iHttpStatus=HTTP_BADREQUEST;
+	int      tcp_mss;
 
-        pData->bThreadUp = TRUE;   // thread is started
+	pData->bThreadUp = TRUE;   //ï¿½thread is started
 
-	// get http request
+							   // get http request
 	bytes_rcvd = recv(pData->skt, pData->buf, pData->buflen - 1, 0);
 	if (bytes_rcvd < 0)
 	{
@@ -791,26 +819,26 @@ int      tcp_mss;
 		goto cleanup;
 	}
 	// open file in binary mode (file length and bytes sent will match)
-        pData->hFile = fopen (pData->long_filename, "rb");
+	pData->hFile = fopen (pData->long_filename, "rb");
 	if (pData->hFile == NULL)
 	{
 		SVC_ERROR("Error opening file %s\nError %d (%s)", pData->long_filename, GetLastError(), LastErrorText());
 		iHttpStatus = HTTP_NOTFOUND;
 		goto cleanup;
 	}
-        // Get  file size, by moving to the end of file
-        fseek (pData->hFile, 0, SEEK_END);
-        pData->qwFileSize = ftell (pData->hFile);
-        fseek (pData->hFile, 0, SEEK_SET);
+	// Get  file size, by moving to the end of file
+	fseek (pData->hFile, 0, SEEK_END);
+	pData->qwFileSize = ftell (pData->hFile);
+	fseek (pData->hFile, 0, SEEK_SET);
 
 
 	// file accepted -> send HTTP 200 answer
 	StringCchPrintf(pData->buf, pData->buflen,
-                        szHTTPDataFmt,
-                        HTTP_OK, "OK",
-			MWEB_VERSION,
-			pData->qwFileSize,
-			pContentType);
+		szHTTPDataFmt,
+		HTTP_OK, "OK",
+		UWEB_VERSION,
+		pData->qwFileSize,
+		pContentType);
 	send(pData->skt, pData->buf, strlen(pData->buf), 0);
 	LogTransfer(pData, LOG_BEGIN, 0);
 
@@ -823,7 +851,7 @@ int      tcp_mss;
 
 		if (IsTransferCancelledByPeer(pData->skt)) 
 			break;
-                if (sSettings.slow_down) ssleep(1);
+		if (sSettings.slow_down) ssleep(sSettings.slow_down);
 	} while (bytes_read>0);
 
 	if ( bytes_read==0 && !feof(pData->hFile) )	//note: if transfer cancelled report OK anyway
@@ -885,10 +913,10 @@ int ParseCmdLine(int argc, char *argv[])
 			case '6': sSettings.bIPv4 = FALSE; break;
 			case 'c': sSettings.szDefaultContentType = argv[ark + 1];  ark++;  break;
 			case 'd': if (!SetCurrentDirectory(argv[++ark]))
-						SVC_ERROR("can not change directory to %s\nError %d (%s)",
-									argv[ark], GetLastError(), LastErrorText());
+				SVC_ERROR("can not change directory to %s\nError %d (%s)",
+					argv[ark], GetLastError(), LastErrorText());
 				break;
-			case 'g': sSettings.slow_down = TRUE;   break;
+			case 'g': sSettings.slow_down = atoi(argv[ark + 1]); ark++;   break;
 			case 'i': sSettings.szBoundTo = argv[ark + 1];  ark++;  break;
 			case 'p': sSettings.szPort = argv[++ark];  break;
 			case 's': sSettings.max_threads = atoi(argv[ark + 1]); ark++; break;
@@ -914,13 +942,12 @@ int ParseCmdLine(int argc, char *argv[])
   // main loop 
 void doLoop(SOCKET ListenSocket)
 {
-SOCKADDR_STORAGE sa;
-int    sa_len;
-SOCKET ClientSocket;
-int    ark;
-DWORD  iResult;
-THREAD_ID Rc;
-struct S_ThreadData *pCur;
+	SOCKADDR_STORAGE sa;
+	int    sa_len;
+	SOCKET ClientSocket;
+	DWORD  iResult;
+	THREAD_ID Rc;
+	struct S_ThreadData *pCur;
 
 	// Accept new client connection
 	sa_len = sizeof sa;
@@ -933,28 +960,28 @@ struct S_ThreadData *pCur;
 		exit(1);
 	}
 
-        // resources available ? 
+	// resources available ? 
 	if (++nbThreads >= sSettings.max_threads)
 	{
 		if (sSettings.bVerbose)
-		    puts("ignore request : too many simultaneous transfers\n");
-                ssleep (3);  // let others threads terminate
+			puts("ignore request : too many simultaneous transfers\n");
+		ssleep (3);  // let others threads terminate
 	}
 	else
 	{
-                
+
 		// create a new ThreadData structure and populate it
-                pCur = (struct S_ThreadData *) calloc (1, sizeof *pCur);
-                if (pCur == NULL)
-                         SVC_ERROR("can not allocate memory");
-printf("allocatin thread %p\n", pCur);
+		pCur = (struct S_ThreadData *) calloc (1, sizeof *pCur);
+		if (pCur == NULL)
+			SVC_ERROR("can not allocate memory");
+		printf("allocatin thread %p\n", pCur);
 
-                // put record at the head of the linked list
-                pCur->next = pThreadDataHead;
-                if (pThreadDataHead!=NULL)  pThreadDataHead->prev = pCur;
-                pThreadDataHead = pCur;
+		// put record at the head of the linked list
+		pCur->next = pThreadDataHead;
+		if (pThreadDataHead!=NULL)  pThreadDataHead->prev = pCur;
+		pThreadDataHead = pCur;
 
-                // populate record
+		// populate record
 		pCur->sa = sa;
 		pCur->buflen = DEFAULT_BUFLEN;
 		pCur->buf = (char *) malloc (pCur->buflen);
@@ -962,13 +989,18 @@ printf("allocatin thread %p\n", pCur);
 		pCur->qwFileCurrentPos = 0;
 		time(& pCur->tStartTrf);
 
-                if (pCur->buf == NULL)
-                         SVC_ERROR("can not allocate memory");
+		if (pCur->buf == NULL)
+			SVC_ERROR("can not allocate memory");
 
 		// Pass the socket id to a new thread and listen again
-                Rc = beginthreadex (NULL, 0, HttpTransferThread, pCur, 0, & pCur->ThreadId);
+		Rc = (THREAD_ID) _beginthreadex (NULL, 0, HttpTransferThread, pCur, 0, NULL);
 		if (Rc == INVALID_THREAD_VALUE)
 			SVC_ERROR("can not allocate thread");
+#if defined WIN32 || defined WIN64
+		pCur->ThreadId = Rc;
+
+
+#endif
 	} // slot available
 } // doLoop
 
@@ -977,34 +1009,33 @@ printf("allocatin thread %p\n", pCur);
   // main program : read args, create listening socket and wait for incoming connections
 int main(int argc, char *argv[])
 {
-SOCKET ListenSocket;
-int ark;
-char sbuf[MAX_PATH];
+	SOCKET ListenSocket;
+	int ark;
+	char sbuf[MAX_PATH];
 
 	ParseCmdLine(argc, argv); // override default settings
 							  // Prepare the socket
 	InitSocket();
 	ListenSocket = BindServiceSocket (sSettings.szPort, sSettings.szBoundTo);
-        if (ListenSocket == INVALID_SOCKET)
-           exit(1);
+	if (ListenSocket == INVALID_SOCKET)
+		exit(1);
 
 	GetCurrentDirectory(sizeof sbuf, sbuf);
 	// if (sSettings.bVerbose)
-		printf("uweb is listening on port %s, base directory is %s\n", 	sSettings.szPort, sbuf);
+	printf("uweb is listening on port %s, base directory is %s\n", 	sSettings.szPort, sbuf);
 
 	for ( ark=0 ;  ark<10 ; ark++)
 	{
-		 doLoop(ListenSocket);
-                 ManageTerminatedThreads (); // free terminated threads resources
+		doLoop(ListenSocket);
+		ManageTerminatedThreads (); // free terminated threads resources
 	} // for (; ; )
 	  // cleanup
 
-        ssleep (5); // wait for last transfer 
-        ManageTerminatedThreads (); // free terminated threads resources
+	ssleep (5); // wait for last transfer 
+	ManageTerminatedThreads (); // free terminated threads resources
 
 	closesocket(ListenSocket);
 	WSACleanup();
 
 	return 0;
 }
-
