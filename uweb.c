@@ -20,6 +20,7 @@ const char SYNTAX[] = ""
 "\n      -6   IPv6 only"
 "\n      -c   content-type assigned to unknown files"
 "\n           (default: reject unregistered types)"
+"\n           -ct default is text/plain -cb default is application/octet-stream"
 "\n      -d   base directory for content (default is current directory)"
 "\n      -g   slow down transfer by waiting for x msc between two frames"
 "\n      -i   listen only this address"
@@ -66,7 +67,8 @@ typedef unsigned THREAD_RET;
 #define INVALID_FILE_VALUE NULL
 #define INVALID_THREAD_VALUE (THREAD_ID) -1L
 
-BOOL IsThreadAlive (THREAD_ID ThId)    { return   WaitForSingleObject(ThId, 0) == WAIT_OBJECT_0 ; }
+BOOL IsThreadAlive (THREAD_ID ThId)    { int Rc=WaitForSingleObject(ThId, 0); 
+											 return Rc != WAIT_OBJECT_0 ; }
 void ssleep (int msec)                 { Sleep (msec); }
 
 
@@ -380,14 +382,16 @@ struct {
 	{ ".7z", "application/x-7z-compressed" },
 
 // add-ons
-{ ".mp4",  "video/mpeg" }, 
-{ ".mpg",  "video/mpeg" }, 
-{ ".iso",  "application/iso" }, 
-{ ".txt",  "application/text" }, 
-{ ".text",  "application/text" }, 
+	{ ".mp4",  "video/mpeg" }, 
+	{ ".mpg",  "video/mpeg" }, 
+	{ ".iso",  "application/iso" }, 
+	{ ".txt",  "text/plain" }, 
+	{ ".text", "text/plain" }, 
 };
 
-
+// is option -c activated default :
+const char DEFAULT_BINARY_TYPE[] = "application/octet-stream";
+const char DEFAULT_TEXT_TYPE[]   = "text/plain";
 
 
 /////////////////////////////////////////////////////////////////
@@ -591,32 +595,34 @@ int ManageTerminatedThreads (void)
 {
 	int ark=0;
 	DWORD  iResult;
-	struct S_ThreadData *pCur, *pNext;
+	struct S_ThreadData *pCur, *pNext, *pPrev;
 
 	// check if threads have ended and free resources
-	for (pCur=pThreadDataHead ;  pCur!=NULL ; pCur=pNext )
+	for (pPrev=NULL, pCur=pThreadDataHead ;  pCur!=NULL ; pCur=pNext )
 	{
 		pNext = pCur->next;   // pCur may be freed
-		if (pCur->bThreadUp &&  ! IsThreadAlive (pCur->ThreadId))
+
+		if (pCur->bThreadUp && ! IsThreadAlive (pCur->ThreadId))
 		{
 			pCur->bThreadUp = FALSE;
 			if (pCur->buf!=NULL)    free (pCur->buf);
 			if (pCur->hFile!=NULL)  fclose (pCur->hFile);
 
-			GetExitCodeThread (pCur->ThreadId, &iResult);
+			// GetExitCodeThread (pCur->ThreadId, &iResult);
 			CloseHandle (pCur->ThreadId);
 			ark++;
 
 			// detach pCur
-			if (pCur->next!=NULL)  pCur->next->prev = pCur->prev;
-			if (pCur->prev!=NULL)  pCur->prev->next = pCur->next;
-			else                   pThreadDataHead  = pCur->next;
+			if (pPrev==NULL)   pThreadDataHead = pCur->next;
+			else               pPrev->next     = pCur->next;
 			// free record 
-			printf("freeing thread %p\n", pCur);
+			// printf("freeing data %p, %d threads\n", pCur, nbThreads);
 			free (pCur);
 
 			--nbThreads;
 		}
+		else
+		     pPrev=pCur ; // update previous valid entry
 	}
 	return ark;
 } // ManageTerminatedThreads
@@ -718,7 +724,7 @@ BOOL ExtractFileName(const char *szHttpRequest, int request_length, char *szFile
 	}
 	// now we ignore all the other stuff sent by client....
 	// just copy the file name
-	url_length = pEnd - pCur;
+	url_length = (int) (pEnd - pCur);
 	if (url_length == 0)		// file name is /
 		StringCchCopy(szFileName, name_size, sSettings.szDefaultHtmlFile);
 	else
@@ -783,7 +789,7 @@ int DecodeHttpRequest(struct S_ThreadData *pData, int request_length)
 
 
   // Thread base
-THREAD_RET HttpTransferThread(void * lpParam)
+THREAD_RET WINAPI HttpTransferThread(void * lpParam)
 {
 	int      bytes_rcvd;
 	DWORD    bytes_read;
@@ -793,7 +799,8 @@ THREAD_RET HttpTransferThread(void * lpParam)
 	int      iHttpStatus=HTTP_BADREQUEST;
 	int      tcp_mss;
 
-	pData->bThreadUp = TRUE;   //�thread is started
+	ssleep (0);
+	pData->bThreadUp = TRUE;   // thread is started
 
 							   // get http request
 	bytes_rcvd = recv(pData->skt, pData->buf, pData->buflen - 1, 0);
@@ -883,7 +890,7 @@ cleanup:
 	}
 	// return Error to client
 	LogTransfer(pData, LOG_END, iHttpStatus);
-	ssleep(1);
+	ssleep(1000);
 
 	return (THREAD_RET) 0;  // return NULL to please compiler
 
@@ -903,6 +910,7 @@ cleanup:
 int ParseCmdLine(int argc, char *argv[])
 {
 	int ark;
+	const char *p;
 	for (ark = 1; ark < argc; ark++)
 	{
 		if (argv[ark][0] == '-')
@@ -911,7 +919,14 @@ int ParseCmdLine(int argc, char *argv[])
 			{
 			case '4': sSettings.bIPv6 = FALSE; break;
 			case '6': sSettings.bIPv4 = FALSE; break;
-			case 'c': sSettings.szDefaultContentType = argv[ark + 1];  ark++;  break;
+			case 'c': switch (argv[ark][2])
+					  {
+						case 'b' : p = DEFAULT_BINARY_TYPE; break;
+						case 't' : p = DEFAULT_TEXT_TYPE;   break;
+						default  : p = argv[ark++ + 1];
+			          }
+					  strncpy (sSettings.szDefaultContentType, p, sizeof sSettings.szDefaultContentType - 1);  
+					  break;
 			case 'd': if (!SetCurrentDirectory(argv[++ark]))
 				SVC_ERROR("can not change directory to %s\nError %d (%s)",
 					argv[ark], GetLastError(), LastErrorText());
@@ -945,9 +960,8 @@ void doLoop(SOCKET ListenSocket)
 	SOCKADDR_STORAGE sa;
 	int    sa_len;
 	SOCKET ClientSocket;
-	DWORD  iResult;
-	THREAD_ID Rc;
 	struct S_ThreadData *pCur;
+	int ark;
 
 	// Accept new client connection
 	sa_len = sizeof sa;
@@ -961,27 +975,26 @@ void doLoop(SOCKET ListenSocket)
 	}
 
 	// resources available ? 
-	if (++nbThreads >= sSettings.max_threads)
+	if (nbThreads >= sSettings.max_threads)
 	{
 		if (sSettings.bVerbose)
 			puts("ignore request : too many simultaneous transfers\n");
-		ssleep (3);  // let others threads terminate
+		ssleep (3000);  // let others threads terminate
 	}
 	else
 	{
-
+		nbThreads++;
+		for (ark=1, pCur=pThreadDataHead ; pCur!=NULL ; pCur=pCur->next, ark++);
 		// create a new ThreadData structure and populate it
 		pCur = (struct S_ThreadData *) calloc (1, sizeof *pCur);
 		if (pCur == NULL)
 			SVC_ERROR("can not allocate memory");
-		printf("allocatin thread %p\n", pCur);
+		// printf("allocating thread %p nb threads %d (%d)\n", pCur, nbThreads, ark);
 
 		// put record at the head of the linked list
-		pCur->next = pThreadDataHead;
-		if (pThreadDataHead!=NULL)  pThreadDataHead->prev = pCur;
-		pThreadDataHead = pCur;
 
 		// populate record
+		pCur->bThreadUp = FALSE;
 		pCur->sa = sa;
 		pCur->buflen = DEFAULT_BUFLEN;
 		pCur->buf = (char *) malloc (pCur->buflen);
@@ -993,14 +1006,20 @@ void doLoop(SOCKET ListenSocket)
 			SVC_ERROR("can not allocate memory");
 
 		// Pass the socket id to a new thread and listen again
-		Rc = (THREAD_ID) _beginthreadex (NULL, 0, HttpTransferThread, pCur, 0, NULL);
-		if (Rc == INVALID_THREAD_VALUE)
+		pCur->ThreadId = (THREAD_ID) _beginthreadex (NULL, 0, HttpTransferThread, pCur, 0, NULL);
+		if (pCur->ThreadId == INVALID_THREAD_VALUE)
+		{
 			SVC_ERROR("can not allocate thread");
-#if defined WIN32 || defined WIN64
-		pCur->ThreadId = Rc;
-
-
-#endif
+			free (pCur->buf);
+			free (pCur);
+			ssleep (1000);
+		}
+		else
+		{
+			// insert data at the head of the list
+			pCur->next = pThreadDataHead;
+			pThreadDataHead = pCur;
+		}
 	} // slot available
 } // doLoop
 
@@ -1024,14 +1043,14 @@ int main(int argc, char *argv[])
 	// if (sSettings.bVerbose)
 	printf("uweb is listening on port %s, base directory is %s\n", 	sSettings.szPort, sbuf);
 
-	for ( ark=0 ;  ark<10 ; ark++)
+	for (  ;  ; )
 	{
-		doLoop(ListenSocket);
 		ManageTerminatedThreads (); // free terminated threads resources
+		doLoop(ListenSocket);
 	} // for (; ; )
 	  // cleanup
 
-	ssleep (5); // wait for last transfer 
+	ssleep (5000); // wait for last transfer 
 	ManageTerminatedThreads (); // free terminated threads resources
 
 	closesocket(ListenSocket);
