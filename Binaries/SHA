@@ -1,7 +1,2 @@
-uweb.exe: 
-       MD5          51166ed4b94010a0e3684a4302aac98c
-       SHA-1        1077c92a335c38d2a84afc467d79e91dda1fd5f0
-uweb64.exe
-       MD5           e5169b8f53198c7cbb5749f4f978acaf
-       SHA-1         1eec70300534c56ba31afdd661532e3352cc5e67
-       
+e5169b8f53198c7cbb5749f4f978acaf  uweb64.exe
+51166ed4b94010a0e3684a4302aac98c  uweb.exe
