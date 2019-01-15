@@ -65,10 +65,10 @@ typedef HANDLE THREAD_ID;
 typedef unsigned THREAD_RET;
 
 #define INVALID_FILE_VALUE NULL
-#define INVALID_THREAD_VALUE (THREAD_ID) -1L
+#define INVALID_THREAD_VALUE (THREAD_ID) -0
 
 BOOL IsThreadAlive (THREAD_ID ThId)    { int Rc=WaitForSingleObject(ThId, 0); 
-											 return Rc != WAIT_OBJECT_0 ; }
+					 return Rc != WAIT_OBJECT_0 ; }
 void ssleep (int msec)                 { Sleep (msec); }
 
 
@@ -153,7 +153,7 @@ int GetCurrentDirectory (int nBufferLength, char *lpBuffer)
 	return p==NULL ? 0 : strlen (lpBuffer);
 }
 
-int SetCurrentDirectory (const char *lpPathName)  { return chdir (lpPathName); }
+int SetCurrentDirectory (const char *lpPathName)  { return chdir (lpPathName)==0; }
 
 
 // ----     threads
@@ -164,11 +164,13 @@ typedef void *    THREAD_RET;
 THREAD_ID _beginthreadex (void *security, unsigned stack_size,  THREAD_RET (* lpStartAddress) (void*), void *lpParameter, unsigned init_flag, THREAD_ID *pThId)
 { 
 	int rc;
+	THREAD_ID ThId;
 	assert (security==NULL);
 	assert (stack_size == 0);
 	assert (init_flag == 0);
 	assert (pThId == NULL);
-	return  pthread_create (pThId, NULL, lpStartAddress, lpParameter);
+	rc =   pthread_create (&ThId, NULL, lpStartAddress, lpParameter);
+        return rc==0 ? ThId : INVALID_THREAD_VALUE;
 }
 
 BOOL IsThreadAlive (THREAD_ID ThId)
@@ -199,7 +201,7 @@ char DEFAULT_PORT[] =  "8080"    ;
 char DEFAULT_HTMLFILE[] = "index.html"; // if request is "GET / HTTP/1.1"
 
 // params passed to logger funcion
-enum { LOG_BEGIN, LOG_END, };		// 
+enum { LOG_BEGIN, LOG_END, LOG_RESET };		// 
 
 // ---------------------------------------------------------
 // Error codes and text
@@ -267,14 +269,14 @@ int HTTPSendError(SOCKET skt, int HttpStatusCode)
   // Global Settings 
 struct S_Settings
 {
-	BOOL  bVerbose;
+	int   uVerbose;
 	BOOL  bIPv4;
 	BOOL  bIPv6;
 	char  *szPort;
 	char  *szBoundTo;
-	char  *szDefaultHtmlFile;
-	char  *szDefaultContentType;	// all files accepted with this content-type
-	int    max_threads;				// maximum simultaneous connections
+	const char  *szDefaultHtmlFile;
+	const char  *szDefaultContentType;	// all files accepted with this content-type
+	int    max_threads;		// maximum simultaneous connections
 	int    slow_down;               // msec to wait between two frames
 }
 sSettings = { FALSE, FALSE, FALSE, DEFAULT_PORT, NULL,  DEFAULT_HTMLFILE, NULL, DEFAULT_MAXTHREADS, FALSE };
@@ -301,7 +303,6 @@ struct S_ThreadData
 
 											// link
 	struct S_ThreadData *next;
-	struct S_ThreadData *prev;
 }
 *pThreadDataHead;			// array allocated in main
 
@@ -417,7 +418,7 @@ static char szLastErrorText[512];
 void SVC_ERROR(const char *szFmt, ...)
 {
 	va_list args;
-	// if (sSettings.bVerbose)
+	// if (sSettings.uVerbose)
 	{
 		va_start(args, szFmt);
 		vfprintf(stderr, szFmt, args);
@@ -502,7 +503,8 @@ int dump_addrinfo(ADDRINFO *runp)
 	char hostbuf[50], portbuf[10];
 	int e;
 
-	printf("family: %d, socktype: %d, protocol: %d, ", runp->ai_family, runp->ai_socktype, runp->ai_protocol);
+	if (sSettings.uVerbose>1)
+               printf("family: %d, socktype: %d, protocol: %d, ", runp->ai_family, runp->ai_socktype, runp->ai_protocol);
 	e = getnameinfo(
 		runp->ai_addr, runp->ai_addrlen,
 		hostbuf, sizeof(hostbuf),
@@ -543,7 +545,7 @@ SOCKET BindServiceSocket(const char *port, const char *sz_bind_addr)
 	else                          for (cur = res ; cur!=NULL  &&  cur->ai_family!=AF_INET6 ; cur = cur->ai_next);
 	assert (cur!=NULL);
 
-	if (sSettings.bVerbose) dump_addrinfo (cur);
+	if (sSettings.uVerbose) dump_addrinfo (cur);
 
 	// now open socket based on either selection
 	sListenSocket = socket(cur->ai_family, cur->ai_socktype, cur->ai_protocol);
@@ -587,48 +589,6 @@ SOCKET BindServiceSocket(const char *port, const char *sz_bind_addr)
 
 
   /////////////////////////////////////////////////////////////////
-  // Thread management
-  /////////////////////////////////////////////////////////////////
-
-  // Do Some cleanup on terminated Threads (use pThreadDataHead as global)
-int ManageTerminatedThreads (void)
-{
-	int ark=0;
-	DWORD  iResult;
-	struct S_ThreadData *pCur, *pNext, *pPrev;
-
-	// check if threads have ended and free resources
-	for (pPrev=NULL, pCur=pThreadDataHead ;  pCur!=NULL ; pCur=pNext )
-	{
-		pNext = pCur->next;   // pCur may be freed
-
-		if (pCur->bThreadUp && ! IsThreadAlive (pCur->ThreadId))
-		{
-			pCur->bThreadUp = FALSE;
-			if (pCur->buf!=NULL)    free (pCur->buf);
-			if (pCur->hFile!=NULL)  fclose (pCur->hFile);
-
-			// GetExitCodeThread (pCur->ThreadId, &iResult);
-			CloseHandle (pCur->ThreadId);
-			ark++;
-
-			// detach pCur
-			if (pPrev==NULL)   pThreadDataHead = pCur->next;
-			else               pPrev->next     = pCur->next;
-			// free record 
-			// printf("freeing data %p, %d threads\n", pCur, nbThreads);
-			free (pCur);
-
-			--nbThreads;
-		}
-		else
-		     pPrev=pCur ; // update previous valid entry
-	}
-	return ark;
-} // ManageTerminatedThreads
-
-
-  /////////////////////////////////////////////////////////////////
   // HTTP protocol management
   //      - decode incoming message
   //      - read file and send it through the Http channel
@@ -642,7 +602,7 @@ int LogTransfer(const struct S_ThreadData *pData, int when, int http_status)
 	char szBuf[256];
 	int Rc;
 
-	if (!sSettings.bVerbose)  return 0;
+	if (sSettings.uVerbose==0)  return 0;
 
 	strcpy (szAddr, "");
 	strcpy (szServ, "");
@@ -653,7 +613,8 @@ int LogTransfer(const struct S_ThreadData *pData, int when, int http_status)
 	if (Rc!=0) 
 	{
 		errno = Rc;
-		SVC_ERROR("gtenameinfo failed.\nError %d (%s)", Rc, LastErrorText());
+		SVC_ERROR("getnameinfo failed.\nError %d (%s)", Rc, LastErrorText());
+                return -1;
 	}
 	// do not use ipv4 mapped address
 	if (* (unsigned short *) szAddr == * (unsigned short *) "::")
@@ -661,14 +622,19 @@ int LogTransfer(const struct S_ThreadData *pData, int when, int http_status)
 
 	switch (when)
 	{
-	case LOG_BEGIN:
+	    case LOG_BEGIN:
 		StringCchPrintf(szBuf, sizeof szBuf, "From %s:%s, GET %s. burst size %d", 
 			szAddr, szServ, pData->file_name, pData->buflen);
 		break;
 
-	case LOG_END:
+    	    case LOG_END:
 		StringCchPrintf(szBuf, sizeof szBuf, "From %s:%s, GET %s: %I64d bytes sent, status : %d",
 			szAddr, szServ, pData->file_name,
+			pData->qwFileCurrentPos, http_status );
+		break;
+    	    case LOG_RESET:
+		StringCchPrintf(szBuf, sizeof szBuf, "GET %s: Reset by %s:%s, %I64d bytes sent, status : %d",
+			pData->file_name, szAddr, szServ, 
 			pData->qwFileCurrentPos, http_status );
 		break;
 	}
@@ -679,7 +645,7 @@ int LogTransfer(const struct S_ThreadData *pData, int when, int http_status)
 
   // translate file extension into HTTP content-type field
   // Get extension type 
-char *GetHtmlContentType(const char *os_extension)
+const char *GetHtmlContentType(const char *os_extension)
 {
 	int ark;
 
@@ -770,7 +736,7 @@ int DecodeHttpRequest(struct S_ThreadData *pData, int request_length)
 	else
 		pData->file_type = strrchr(pData->file_name, '.');	// search for '.'
 
-															// sanity check : do not go backward in the directory structure
+									// sanity check : do not go backward in the directory structure
 	GetFullPathName(".", MAX_PATH, szCurDir, NULL);
 #ifdef UNSAFE__DEBUG
 	printf("file to be retreived is %s, path is %s, file is %s, cur dir is %s\n", pData->long_filename, pData->buf, pData->file_name, szCurDir);
@@ -793,7 +759,7 @@ THREAD_RET WINAPI HttpTransferThread(void * lpParam)
 {
 	int      bytes_rcvd;
 	DWORD    bytes_read;
-	char     *pContentType;
+	const char     *pContentType;
 	struct S_ThreadData *pData = (struct S_ThreadData *)  lpParam;
 	int      iResult = -1;
 	int      iHttpStatus=HTTP_BADREQUEST;
@@ -811,7 +777,13 @@ THREAD_RET WINAPI HttpTransferThread(void * lpParam)
 	}
 	// modify buffer size depending on MSS
 	if ( (tcp_mss = GetSocketMSS(pData->skt)) > 0 ) 
+        {
 		pData->buflen = DEFAULT_BURST_PKTS * tcp_mss;
+                pData->buf = realloc (pData->buf, pData->buflen);
+                if (pData->buf==NULL)
+                { SVC_ERROR("can not allocate memory\n"); exit(3); }
+        }
+               
 
 	// request is valid and pData filled with requested file
 	iHttpStatus = DecodeHttpRequest(pData, bytes_rcvd);
@@ -857,7 +829,13 @@ THREAD_RET WINAPI HttpTransferThread(void * lpParam)
 		pData->qwFileCurrentPos += bytes_read;
 
 		if (IsTransferCancelledByPeer(pData->skt)) 
+                {
+			LogTransfer (pData, LOG_RESET, HTTP_PARTIAL);
 			break;
+                }
+                if (sSettings.uVerbose>4) 
+                   printf ("read %d bytes from %s\n", bytes_read, pData->long_filename);
+
 		if (sSettings.slow_down) ssleep(sSettings.slow_down);
 	} while (bytes_read>0);
 
@@ -899,18 +877,143 @@ cleanup:
 
 
   /////////////////////////////////////////////////////////////////
-  // main
+  // main thread
   //      - create the listening socket
   //      - loop on waiting for incoming connection
-  //        - start a new thread for each connection
+  //      - start a new thread for each connection
+  //      - free thread resource  after termination
+  //      - maintain threads data link list
   /////////////////////////////////////////////////////////////////
+
+  // Do Some cleanup on terminated Threads (use pThreadDataHead as global)
+int ManageTerminatedThreads (void)
+{
+	int ark=0;
+	DWORD  iResult;
+	struct S_ThreadData *pCur, *pNext, *pPrev;
+
+	// check if threads have ended and free resources
+	for (pPrev=NULL, pCur=pThreadDataHead ;  pCur!=NULL ; pCur=pNext )
+	{
+		pNext = pCur->next;   // pCur may be freed
+
+		if (pCur->bThreadUp && ! IsThreadAlive (pCur->ThreadId))
+		{
+			pCur->bThreadUp = FALSE;
+			if (pCur->buf!=NULL)    free (pCur->buf), pCur->buf=NULL;;
+			if (pCur->hFile!=NULL)  fclose (pCur->hFile), pCur->hFile=NULL;;
+
+			// GetExitCodeThread (pCur->ThreadId, &iResult);
+			CloseHandle (pCur->ThreadId);
+			ark++;
+
+			// detach pCur
+			if (pPrev==NULL)   pThreadDataHead = pCur->next;
+			else               pPrev->next     = pCur->next;
+			// free record 
+			free (pCur);
+
+			--nbThreads;
+		}
+		else
+		     pPrev=pCur ; // pPrev is the last valid entry
+	}
+	return ark;
+} // ManageTerminatedThreads
+
+
+// -------------------
+// main loop 
+// -------------------
+void doLoop(SOCKET ListenSocket)
+{
+	SOCKADDR_STORAGE sa;
+	int    sa_len;
+	SOCKET ClientSocket;
+	struct S_ThreadData *pCur;
+	int ark;
+
+	// Accept new client connection
+	sa_len = sizeof sa;
+	memset(&sa, 0, sizeof sa);
+
+        // block main thread on accept
+	ClientSocket = accept(ListenSocket, (struct sockaddr *) & sa, &sa_len);
+	if (ClientSocket == INVALID_SOCKET) {
+		SVC_ERROR("Error : Accept failed\nError %d (%s)", GetLastError(), LastErrorText());
+		closesocket(ListenSocket);
+		WSACleanup();
+		exit(1);
+	}
+
+        // if main thread is awaken : start a new thread, check if a thread has terminated
+        // and return listening for incoming connections
+
+	// resources available ? 
+	if (nbThreads >= sSettings.max_threads)
+	{
+		if (sSettings.uVerbose)
+			puts("ignore request : too many simultaneous transfers\n");
+		ssleep (3000);  // let others threads terminate
+	}
+	else
+	{
+		nbThreads++;
+		for (ark=1, pCur=pThreadDataHead ; pCur!=NULL ; pCur=pCur->next, ark++);
+		// create a new ThreadData structure and populate it
+		pCur = (struct S_ThreadData *) calloc (1, sizeof *pCur);
+		if (pCur == NULL)
+			SVC_ERROR("can not allocate memory");
+
+		// populate record
+		pCur->bThreadUp = FALSE;
+		pCur->sa = sa;
+		pCur->buflen = DEFAULT_BUFLEN;
+		pCur->buf = (char *) malloc (pCur->buflen);
+		pCur->skt = ClientSocket;
+		pCur->qwFileCurrentPos = 0;
+		time(& pCur->tStartTrf);
+
+		if (pCur->buf == NULL)
+                {
+			SVC_ERROR("can not allocate memory");
+                        exit(2);
+                }
+
+		// Pass the socket id to a new thread and listen again
+		pCur->ThreadId = (THREAD_ID) _beginthreadex (NULL, 0, HttpTransferThread, pCur, 0, NULL);
+		if (pCur->ThreadId == INVALID_THREAD_VALUE)
+		{
+			SVC_ERROR("can not allocate thread");
+			free (pCur->buf);
+			free (pCur);
+			ssleep (1000);
+		}
+		else
+		{
+			// insert data at the head of the list
+			pCur->next = pThreadDataHead;
+			pThreadDataHead = pCur;
+		}
+	} // slot available
+
+	ssleep (10); // let worker thread begin (and exit on error)
+	ManageTerminatedThreads (); // free terminated threads resources
+} // doLoop
+
+
+
+// -------------------
+// inits 
+// -------------------
 
   // process args (mostly populate settings structure)
   // loosely processed : user can crash with invalid args...
 int ParseCmdLine(int argc, char *argv[])
 {
-	int ark;
-	const char *p;
+	int ark, idx;
+	const char *p; 
+
 	for (ark = 1; ark < argc; ark++)
 	{
 		if (argv[ark][0] == '-')
@@ -920,23 +1023,28 @@ int ParseCmdLine(int argc, char *argv[])
 			case '4': sSettings.bIPv6 = FALSE; break;
 			case '6': sSettings.bIPv4 = FALSE; break;
 			case 'c': switch (argv[ark][2])
-					  {
-						case 'b' : p = DEFAULT_BINARY_TYPE; break;
-						case 't' : p = DEFAULT_TEXT_TYPE;   break;
-						default  : p = argv[ark++ + 1];
+				  {
+					case 'b' : p = DEFAULT_BINARY_TYPE; break;
+					case 't' : p = DEFAULT_TEXT_TYPE;   break;
+					default  : p = argv[++ark]; 
 			          }
-					  strncpy (sSettings.szDefaultContentType, p, sizeof sSettings.szDefaultContentType - 1);  
-					  break;
+				  sSettings.szDefaultContentType = p;
+				  break;
 			case 'd': if (!SetCurrentDirectory(argv[++ark]))
-				SVC_ERROR("can not change directory to %s\nError %d (%s)",
+				  {
+					SVC_ERROR("can not change directory to %s\nError %d (%s)",
 					argv[ark], GetLastError(), LastErrorText());
+					exit(1);
+				 }
 				break;
-			case 'g': sSettings.slow_down = atoi(argv[ark + 1]); ark++;   break;
-			case 'i': sSettings.szBoundTo = argv[ark + 1];  ark++;  break;
-			case 'p': sSettings.szPort = argv[++ark];  break;
-			case 's': sSettings.max_threads = atoi(argv[ark + 1]); ark++; break;
-			case 'v': sSettings.bVerbose = TRUE;   break;
-			case 'x': sSettings.szDefaultHtmlFile = argv[ark + 1];  ark++;  break;
+			case 'g': sSettings.slow_down   = atoi(argv[++ark]);   break;
+			case 'i': sSettings.szBoundTo   = argv[++ark];         break;
+			case 'p': sSettings.szPort      = argv[++ark];         break;
+			case 's': sSettings.max_threads = atoi(argv[++ark]);   break;
+			case 'v': for (idx=1;  argv[ark][idx]=='v' ; idx++) 
+                                       sSettings.uVerbose++;      
+                                  break;
+			case 'x': sSettings.szDefaultHtmlFile = argv[++ark];   break;
 				break;
 			default:
 				puts(SYNTAX);
@@ -955,75 +1063,6 @@ int ParseCmdLine(int argc, char *argv[])
 
 
   // main loop 
-void doLoop(SOCKET ListenSocket)
-{
-	SOCKADDR_STORAGE sa;
-	int    sa_len;
-	SOCKET ClientSocket;
-	struct S_ThreadData *pCur;
-	int ark;
-
-	// Accept new client connection
-	sa_len = sizeof sa;
-	memset(&sa, 0, sizeof sa);
-	ClientSocket = accept(ListenSocket, (struct sockaddr *) & sa, &sa_len);
-	if (ClientSocket == INVALID_SOCKET) {
-		SVC_ERROR("Error : Accept failed\nError %d (%s)", GetLastError(), LastErrorText());
-		closesocket(ListenSocket);
-		WSACleanup();
-		exit(1);
-	}
-
-	// resources available ? 
-	if (nbThreads >= sSettings.max_threads)
-	{
-		if (sSettings.bVerbose)
-			puts("ignore request : too many simultaneous transfers\n");
-		ssleep (3000);  // let others threads terminate
-	}
-	else
-	{
-		nbThreads++;
-		for (ark=1, pCur=pThreadDataHead ; pCur!=NULL ; pCur=pCur->next, ark++);
-		// create a new ThreadData structure and populate it
-		pCur = (struct S_ThreadData *) calloc (1, sizeof *pCur);
-		if (pCur == NULL)
-			SVC_ERROR("can not allocate memory");
-		// printf("allocating thread %p nb threads %d (%d)\n", pCur, nbThreads, ark);
-
-		// put record at the head of the linked list
-
-		// populate record
-		pCur->bThreadUp = FALSE;
-		pCur->sa = sa;
-		pCur->buflen = DEFAULT_BUFLEN;
-		pCur->buf = (char *) malloc (pCur->buflen);
-		pCur->skt = ClientSocket;
-		pCur->qwFileCurrentPos = 0;
-		time(& pCur->tStartTrf);
-
-		if (pCur->buf == NULL)
-			SVC_ERROR("can not allocate memory");
-
-		// Pass the socket id to a new thread and listen again
-		pCur->ThreadId = (THREAD_ID) _beginthreadex (NULL, 0, HttpTransferThread, pCur, 0, NULL);
-		if (pCur->ThreadId == INVALID_THREAD_VALUE)
-		{
-			SVC_ERROR("can not allocate thread");
-			free (pCur->buf);
-			free (pCur);
-			ssleep (1000);
-		}
-		else
-		{
-			// insert data at the head of the list
-			pCur->next = pThreadDataHead;
-			pThreadDataHead = pCur;
-		}
-	} // slot available
-} // doLoop
-
-
 
   // main program : read args, create listening socket and wait for incoming connections
 int main(int argc, char *argv[])
@@ -1040,21 +1079,20 @@ int main(int argc, char *argv[])
 		exit(1);
 
 	GetCurrentDirectory(sizeof sbuf, sbuf);
-	// if (sSettings.bVerbose)
+	// if (sSettings.uVerbose)
 	printf("uweb is listening on port %s, base directory is %s\n", 	sSettings.szPort, sbuf);
 
 	for (  ;  ; )
 	{
-		ManageTerminatedThreads (); // free terminated threads resources
 		doLoop(ListenSocket);
 	} // for (; ; )
 	  // cleanup
 
 	ssleep (5000); // wait for last transfer 
 	ManageTerminatedThreads (); // free terminated threads resources
-
 	closesocket(ListenSocket);
 	WSACleanup();
 
 	return 0;
 }
+
