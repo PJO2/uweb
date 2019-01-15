@@ -1,7 +1,8 @@
 // --------------------------------------------------------
-// uweb : a minimal web server based on nweb23.c
+// uweb : a minimal web server which compile under Liunx and Windows
 // by Ph. Jounin jan 2019
 // 
+// License: GPLv3
 // Sources : 
 //              - nweb23.c from IBM and Nigel Griffiths
 //              - mweb.cpp from Ph. Jounin
@@ -20,7 +21,7 @@ const char SYNTAX[] = ""
 "\n      -6   IPv6 only"
 "\n      -c   content-type assigned to unknown files"
 "\n           (default: reject unregistered types)"
-"\n           -ct default is text/plain -cb default is application/octet-stream"
+"\n           [-ct: default text/plain], [-cb: default application/octet-stream]"
 "\n      -d   base directory for content (default is current directory)"
 "\n      -g   slow down transfer by waiting for x msc between two frames"
 "\n      -i   listen only this address"
@@ -758,7 +759,7 @@ int DecodeHttpRequest(struct S_ThreadData *pData, int request_length)
 THREAD_RET WINAPI HttpTransferThread(void * lpParam)
 {
 	int      bytes_rcvd;
-	DWORD    bytes_read;
+	DWORD    bytes_read, bytes_sent;
 	const char     *pContentType;
 	struct S_ThreadData *pData = (struct S_ThreadData *)  lpParam;
 	int      iResult = -1;
@@ -825,15 +826,15 @@ THREAD_RET WINAPI HttpTransferThread(void * lpParam)
 	do
 	{
 		bytes_read = fread (pData->buf, 1, pData->buflen, pData->hFile);
-		send(pData->skt, pData->buf, bytes_read, 0);
+        bytes_sent = send(pData->skt, pData->buf, bytes_read, 0);
 		pData->qwFileCurrentPos += bytes_read;
 
-		if (IsTransferCancelledByPeer(pData->skt)) 
-                {
+		if (pData->buflen==bytes_read &&  IsTransferCancelledByPeer(pData->skt)) 
+        {
 			LogTransfer (pData, LOG_RESET, HTTP_PARTIAL);
 			break;
-                }
-                if (sSettings.uVerbose>4) 
+        }
+         if (sSettings.uVerbose>4) 
                    printf ("read %d bytes from %s\n", bytes_read, pData->long_filename);
 
 		if (sSettings.slow_down) ssleep(sSettings.slow_down);
@@ -889,7 +890,6 @@ cleanup:
 int ManageTerminatedThreads (void)
 {
 	int ark=0;
-	DWORD  iResult;
 	struct S_ThreadData *pCur, *pNext, *pPrev;
 
 	// check if threads have ended and free resources
@@ -903,7 +903,6 @@ int ManageTerminatedThreads (void)
 			if (pCur->buf!=NULL)    free (pCur->buf), pCur->buf=NULL;;
 			if (pCur->hFile!=NULL)  fclose (pCur->hFile), pCur->hFile=NULL;;
 
-			// GetExitCodeThread (pCur->ThreadId, &iResult);
 			CloseHandle (pCur->ThreadId);
 			ark++;
 
@@ -1068,7 +1067,6 @@ int ParseCmdLine(int argc, char *argv[])
 int main(int argc, char *argv[])
 {
 	SOCKET ListenSocket;
-	int ark;
 	char sbuf[MAX_PATH];
 
 	ParseCmdLine(argc, argv); // override default settings
@@ -1095,4 +1093,3 @@ int main(int argc, char *argv[])
 
 	return 0;
 }
-
