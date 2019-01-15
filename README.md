@@ -1,2 +1,3 @@
 # uweb
-A tiny multi-threaded http server. When finished should work under Windows, linux and Mac. 
+A tiny multi-threaded http server. 
+The source code compile under Linux and Windows.
