@@ -36,6 +36,7 @@ uweb is made for you !
 get the source, compile, run :
 
     $ git clone https://github.com/PJO2/uweb
+    $ cd uweb
     $ make
     $ ./uweb -v -x hello.html
 
@@ -44,7 +45,7 @@ get the source, compile, run :
 Even easier : get the binaries and run !
 
     > git clone https://github.com/PJO2/uweb
-    > WinBinaries\uweb32.exe -v -x hello.html
+    > uweb\WinBinaries\uweb32.exe -v -d uweb -x hello.html
 
 ### test it
 from a local web brower open this URL : http://127.0.0.1:8080/
