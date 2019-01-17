@@ -1,11 +1,13 @@
 CC=gcc
-CFLAGS= -g -D UNIX
-LDFLAGS= -l pthread -l nsl
+CFLAGS= -O -D UNIX
+LDFLAGS= -l pthread
 EXEC=uweb
 
 
 all: $(EXEC)
 
-uweb: uweb.c
+$(EXEC): uweb.c
 	$(CC) -o $@ $^ $(CFLAGS) $(LDFLAGS)
 
+clean:
+	rm $(EXEC)
