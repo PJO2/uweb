@@ -2,7 +2,7 @@
 // uweb : a minimal web server which compile under MacOS, Linux and Windows
 // by Ph. Jounin jan 2019
 // 
-// License: GPLv3
+// License: GPLv2
 // Sources : 
 //              - nweb23.c from IBM and Nigel Griffiths
 //              - mweb.cpp from Ph. Jounin
