@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS= -O -D UNIX
+CFLAGS= -O -D UNIX -Wall
 LDFLAGS= -l pthread
 EXEC=uweb
 

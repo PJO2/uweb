@@ -1,5 +1,5 @@
 // --------------------------------------------------------
-// uweb : a minimal web server which compile under Liunx and Windows
+// uweb : a minimal web server which compile under MacOS, Linux and Windows
 // by Ph. Jounin jan 2019
 // 
 // License: GPLv3
@@ -11,11 +11,11 @@
 
 
 
-#define UWEB_VERSION "1.1"
+#define UWEB_VERSION "1.2"
 
 const char SYNTAX[] = ""
 "uweb: Usage\n"
-"\n uweb [-4] [-6] [-p port] [-d dir] [-i addr] [-c content-type] [-g msec]"
+"\n uweb [-4|-6] [-p port] [-d dir] [-i addr] [-c content-type | -ct | -cb] [-g msec]"
 "\n      [-s max connections] [-verbose]\n"
 "\n      -4   IPv4 only"
 "\n      -6   IPv6 only"
@@ -40,8 +40,10 @@ const char SYNTAX[] = ""
 #include <string.h>
 #include <assert.h>
 
-
+// avoid warning "variable set but unused"
 #define __DUMMY(x) ( (void) (x) )
+
+#define INVALID_FILE_VALUE NULL
 
 // ---------------------------------------------------------
 // Windows portability tweaks
@@ -63,24 +65,26 @@ const char SYNTAX[] = ""
 #define strcasecmp _stricmp 
 #define strncasecmp _strnicmp 
 
+// print 64 bytes unsigned (for files > 4Gb)
+#define _FILE_OFFSET_BITS 64
 #define PRIu64   I64u
 
 typedef  int    socklen_t;
 
-
-#define _FILE_OFFSET_BITS 64
+// ---      Common thread encapsulation
 typedef HANDLE THREAD_ID;
 typedef unsigned THREAD_RET;
 
-#define INVALID_FILE_VALUE NULL
 #define INVALID_THREAD_VALUE (THREAD_ID) -0
 
-THREAD_ID _startnewthread ( THREAD_RET (* lpStartAddress) (void*), void *lpParameter ) 
-{
-  return (THREAD_ID) _beginthreadex (NULL, 0, lpStartAddress, lpParameter, 0, NULL);
-}
+THREAD_ID _startnewthread ( THREAD_RET (* lpStartAddress) (void*), 
+                            void *lpParameter ) 
+{ return (THREAD_ID) _beginthreadex (NULL, 0, lpStartAddress, lpParameter, 0, NULL); }
 void _waitthreadend (THREAD_ID ThId)   { WaitForSingleObject(ThId, INFINITE); } 
 void _killthread (THREAD_ID ThId)      { TerminateThread (ThId, -1); } 
+
+
+// millisecond sleep (native for Windows, not for unix)
 void ssleep (int msec)                 { Sleep (msec); }
 
 
@@ -111,22 +115,20 @@ void ssleep (int msec)                 { Sleep (msec); }
 #include <pthread.h>
 
 
-
 #define WINAPI
-#define INVALID_FILE_VALUE    NULL
-#define __cdecl
 
 typedef int            BOOL;
 typedef uint64_t       DWORD64;
 
 enum { FALSE=0, TRUE };
 
+// ---      system library
 int GetLastError(void)     { return errno; }
 void ssleep (int msec)     { sleep (msec / 1000); usleep ((msec % 1000) * 1000); }
 int min(int a, int b)      { return (a < b ? a : b); }
 
 
-// ----     socket library 
+// ----     socket library and types
 #define INVALID_SOCKET -1
 
 typedef struct sockaddr_storage SOCKADDR_STORAGE;
@@ -255,6 +257,7 @@ const char szHTTPDataFmt[] = "HTTP/1.1 %d %s\nServer: mweb-%s\nContent-Length: %
 BOOL GO_ON=TRUE;
 
 const int SELECT_TIMEOUT = 5;  // every 5 seconds, look for terminated threads
+const int LISTENING_QUEUE_SIZE = 3; // do not need a large queue
 
 // uweb Settings 
 struct S_Settings
@@ -383,7 +386,7 @@ const struct {
 	{ ".text", "text/plain" }, 
 };
 
-// is option -c activated default :
+// is option -c activate default :
 const char DEFAULT_BINARY_TYPE[] = "application/octet-stream";
 const char DEFAULT_TEXT_TYPE[]   = "text/plain";
 
@@ -451,13 +454,14 @@ int IsTransferCancelledByPeer(SOCKET skt)
 {
 	struct timeval to = { 0, 0 };
 	fd_set fdset;
-	char   recv_buf[4];
+	char   recv_buf[32]; // read a significant amount of data
+                             // since the HTTP request is still in buffer
 	int   iResult;
 	// check if socket has been closed by client
 	FD_ZERO(&fdset);
 	FD_SET(skt, &fdset);
 	iResult = select(0, &fdset, NULL, NULL, &to)>0
-		&& recv(skt, recv_buf, sizeof recv_buf, 0) == 0;
+		&& recv(skt, recv_buf, sizeof recv_buf, MSG_PEEK) == 0;
 	return iResult;
 } // IsTransferCancelledByPeer
 
@@ -472,7 +476,8 @@ int GetSocketMSS(SOCKET skt)
 	iResult = getsockopt(skt, IPPROTO_TCP, TCP_MAXSEG, (char*) & tcp_mss , & opt_len);
 	if (iResult < 0)
 	{
-		SVC_ERROR("Failed to get TCP_MAXSEG for master socket.\nError %d (%s)", GetLastError(), LastErrorText());
+		SVC_ERROR("Failed to get TCP_MAXSEG for master socket.\nError %d (%s)", 
+                           GetLastError(), LastErrorText());
 		return -1;
 	}
 	return tcp_mss;
@@ -502,10 +507,10 @@ int dump_addrinfo(ADDRINFO *runp)
 	if (sSettings.uVerbose>1)
                printf("family: %d, socktype: %d, protocol: %d, ", runp->ai_family, runp->ai_socktype, runp->ai_protocol);
 	e = getnameinfo(
-		runp->ai_addr, runp->ai_addrlen,
-		hostbuf, sizeof(hostbuf),
-		portbuf, sizeof(portbuf),
-		NI_NUMERICHOST | NI_NUMERICSERV
+			runp->ai_addr, runp->ai_addrlen,
+			hostbuf, sizeof(hostbuf),
+			portbuf, sizeof(portbuf),
+			NI_NUMERICHOST | NI_NUMERICSERV
 	);
 	printf("host: %s, port: %s\n", hostbuf, portbuf);
        __DUMMY(e);
@@ -532,14 +537,15 @@ SOCKET BindServiceSocket(const char *port, const char *sz_bind_addr)
 	Rc = getaddrinfo(sz_bind_addr, port, &Hints, &res);
 	if (Rc != 0)
 	{
-		SVC_ERROR("Error : specified address %s is not recognized\nError %d (%s)", sz_bind_addr, GetLastError(), LastErrorText());
+		SVC_ERROR("Error : specified address %s is not recognized\nError %d (%s)", 
+			  sz_bind_addr, GetLastError(), LastErrorText());
 		return INVALID_SOCKET;
 	}
 
 	// if getaddr_info returns only one entry: take it (option -i, -4, -6 or ipv4 only host)
 	// else search for  the ipv6 socket (then deactivate the option IPV6_V6ONLY)
-	if (res->ai_next == NULL)     cur = res;
-	else                          for (cur = res ; cur!=NULL  &&  cur->ai_family!=AF_INET6 ; cur = cur->ai_next);
+	if (res->ai_next == NULL)   cur = res;
+	else                        for (cur = res ; cur!=NULL  &&  cur->ai_family!=AF_INET6 ; cur = cur->ai_next);
 	assert (cur!=NULL);
 
 	if (sSettings.uVerbose) dump_addrinfo (cur);
@@ -570,7 +576,7 @@ SOCKET BindServiceSocket(const char *port, const char *sz_bind_addr)
 		return INVALID_SOCKET;
 	}
 	// create the listen queue
-	Rc = listen(sListenSocket, 5);
+	Rc = listen(sListenSocket, LISTENING_QUEUE_SIZE);
 	if (Rc == -1)
 	{
 		SVC_ERROR("Error : on listen\nError %d (%s)", GetLastError(), LastErrorText());
@@ -604,17 +610,17 @@ int HTTPSendError(SOCKET skt, int HttpStatusCode)
         assert (sErrorCodes[ark].status_code==HttpStatusCode);  // exit if error code not found (bug)
 
         StringCchPrintf (szContentBuf, sizeof szContentBuf, szHTMLErrFmt,
-                sErrorCodes[ark].status_code,
-                sErrorCodes[ark].txt_content,
-                sErrorCodes[ark].txt_content,
-                sErrorCodes[ark].html_content );
+                 	sErrorCodes[ark].status_code,
+                	sErrorCodes[ark].txt_content,
+                	sErrorCodes[ark].txt_content,
+                	sErrorCodes[ark].html_content );
         // now we have the string, get its length and send headers and string
         StringCchPrintf (szHTTPHeaders, sizeof szHTTPHeaders, szHTTPDataFmt,
-                sErrorCodes[ark].status_code,
-                sErrorCodes[ark].txt_content,
-                UWEB_VERSION,
-                (DWORD64) strlen (szContentBuf),
-                "text/html" );
+                	sErrorCodes[ark].status_code,
+                	sErrorCodes[ark].txt_content,
+                	UWEB_VERSION,
+                	(DWORD64) strlen (szContentBuf),
+                	"text/html" );
         iResult = send (skt, szHTTPHeaders, strlen (szHTTPHeaders), 0);
         iResult = send (skt, szContentBuf,  strlen (szContentBuf),  0);
         return iResult;
@@ -633,9 +639,9 @@ int LogTransfer(const struct S_ThreadData *pData, int when, int http_status)
 	strcpy (szAddr, "");
 	strcpy (szServ, "");
 	Rc = getnameinfo((LPSOCKADDR)& pData->sa, sizeof pData->sa,
-		szAddr, sizeof szAddr,
-		szServ, sizeof szServ,
-		NI_NUMERICHOST | NI_NUMERICSERV);
+			szAddr, sizeof szAddr,
+			szServ, sizeof szServ,
+			NI_NUMERICHOST | NI_NUMERICSERV);
 	if (Rc!=0) 
 	{
 		errno = Rc;
@@ -791,9 +797,8 @@ THREAD_RET WINAPI HttpTransferThread(void * lpParam)
 	int      tcp_mss;
 
 	pData->ThStatus = THREAD_STATE_RUNNING;   // thread is now running
-	ssleep (0);                               // let main thread return in accept
 
-							   // get http request
+        // read http request
 	bytes_rcvd = recv(pData->skt, pData->buf, pData->buflen - 1, 0);
 	if (bytes_rcvd < 0)
 	{
@@ -1028,7 +1033,8 @@ void doLoop(SOCKET ListenSocket)
 	     ManageTerminatedThreads ();
 
 	     // and listen incoming connections
-             FD_SET(ListenSocket, &readfs);
+             FD_ZERO (&readfs);
+             FD_SET (ListenSocket, &readfs);
              tv_select.tv_sec  = SELECT_TIMEOUT;   // may have been changed by select
              tv_select.tv_usec = 0; 
              Rc = select (ListenSocket+1, & readfs, NULL, NULL, & tv_select);
