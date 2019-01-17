@@ -48,7 +48,7 @@ Even easier : get the binaries and run !
     > uweb\WinBinaries\uweb32.exe -v -d uweb -x hello.html
 
 ### test it
-from a local web brower open this URL : http://127.0.0.1:8080/
+from a local web browser open this URL : http://127.0.0.1:8080/
 
 
 
