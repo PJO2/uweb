@@ -7,10 +7,10 @@ uweb is written in pure C using portable stream file and socket API.
 - Have you ever wanted to set up a web server in a few seconds without spending hours in the documentation or consuming to much resources ?
 - Do you want to know how to write a server based on the socket programming APIs, writing IPv4/IPv6 agnostic applications  ? Or managing a pool of worker threads ?
 - Do you want a Web server that you can easily customize ? 
+
 uweb is made for you !
 
 ### Set up for Linux and MacOS
-
 get the source, compile, run :
 
     $ git clone https://github.com/PJO2/uweb
@@ -19,7 +19,6 @@ get the source, compile, run :
 
 
 ### set up for windows
-
 Even easier : get the binaries and run !
 
     > git clone https://github.com/PJO2/uweb
