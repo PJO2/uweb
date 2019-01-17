@@ -78,7 +78,7 @@ typedef unsigned THREAD_RET;
 
 #define INVALID_THREAD_VALUE (THREAD_ID) -0
 
-THREAD_ID _startnewthread ( THREAD_RET (* lpStartAddress) (void*), 
+THREAD_ID _startnewthread ( THREAD_RET (WINAPI * lpStartAddress) (void*), 
                             void *lpParameter ) 
 { return (THREAD_ID) _beginthreadex (NULL, 0, lpStartAddress, lpParameter, 0, NULL); }
 void _waitthreadend (THREAD_ID ThId)   { WaitForSingleObject(ThId, INFINITE); } 
@@ -177,7 +177,7 @@ typedef pthread_t THREAD_ID;
 typedef void *    THREAD_RET;
 #define INVALID_THREAD_VALUE ((THREAD_ID) (-1))
 
-THREAD_ID _startnewthread ( THREAD_RET (* lpStartAddress) (void*), void *lpParameter ) 
+THREAD_ID _startnewthread ( THREAD_RET (WINAPI * lpStartAddress) (void*), void *lpParameter ) 
 {
         int rc;
 	THREAD_ID ThId;
