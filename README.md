@@ -37,14 +37,14 @@ get the source, compile, run :
 
     $ git clone https://github.com/PJO2/uweb
     $ make
-    $ ./uweb -v
+    $ ./uweb -v -x hello.html
 
 
 ### set up for windows
 Even easier : get the binaries and run !
 
     > git clone https://github.com/PJO2/uweb
-    > WinBinaries\uweb32.exe -v
+    > WinBinaries\uweb32.exe -v -x hello.html
 
 ### test it
 from a local web brower open this URL : http://127.0.0.1:8080/
