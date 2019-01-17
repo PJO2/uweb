@@ -15,8 +15,8 @@
 
 const char SYNTAX[] = ""
 "uweb: Usage\n"
-"\n uweb [-4|-6] [-p port] [-d dir] [-i addr] [-c content-type | -ct | -cb] [-g msec]"
-"\n      [-s max connections] [-verbose]\n"
+"\n uweb   [-4|-6] [-p port] [-d dir] [-i addr] [-c content-type|-ct|-cb]"
+"\n        [-g msec] [-s max connections] [-verbose] [-x file]\n"
 "\n      -4   IPv4 only"
 "\n      -6   IPv6 only"
 "\n      -c   content-type assigned to unknown files"
@@ -26,8 +26,9 @@ const char SYNTAX[] = ""
 "\n      -g   slow down transfer by waiting for x msc between two frames"
 "\n      -i   listen only this address"
 "\n      -p   HTTP port (defaut is 8080)"
-"\n      -s   maximum simultaneous connection (default is 1024)"
+"\n      -s   maximum simultaneous connections (default is 1024)"
 "\n      -v   verbose"
+"\n      -x   set the default page for a directory (default is index.html)"
 "\n";
 
 #define _CRT_SECURE_NO_WARNINGS	1
