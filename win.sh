@@ -13,8 +13,10 @@ git add WinBinaries/*
 git commit -m "update windows binaries"
 
 # send files to VirusTotal.com for inspection
-export VT_API_KEY=`cat /home/ark/vt.key`
-curl -v -F 'WinBinaries/uweb32.exe' -F apikey=${VT_API_KEY} https://www.virustotal.com/vtapi/v2/file/scan
-curl -v -F 'WinBinaries/uweb64.exe' -F apikey=${VT_API_KEY} https://www.virustotal.com/vtapi/v2/file/scan
+VT_API_KEY=`cat /home/ark/vt.key`
+curl -s  -F 'file=@WinBinaries/uweb32.exe' -F apikey=${VT_API_KEY} https://www.virustotal.com/vtapi/v2/file/scan | 
+            python -mjson.tool | grep permalink
+curl -s  -F 'file=@WinBinaries/uweb64.exe' -F apikey=${VT_API_KEY} https://www.virustotal.com/vtapi/v2/file/scan | 
+            python -mjson.tool | grep permalink
 
 
