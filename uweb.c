@@ -67,7 +67,7 @@ const char SYNTAX[] = ""
 
 // print 64 bytes unsigned (for files > 4Gb)
 #define _FILE_OFFSET_BITS 64
-#define PRIu64   I64u
+#define PRIu64   "I64u"
 
 typedef  int    socklen_t;
 
