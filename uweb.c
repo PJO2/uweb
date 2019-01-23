@@ -113,6 +113,8 @@ void ssleep (int msec)                 { Sleep (msec); }
 #include <arpa/inet.h>
 #include <netdb.h>
 
+#include <signal.h>
+
 #include <pthread.h>
 
 
@@ -140,7 +142,12 @@ typedef int WSADATA;
 #define MAKEWORD(low,high) ( low + (high<<8) )
 
 int closesocket(int s)                   { return close (s); }
-int WSAStartup(int version, WSADATA *ws) { return 0; }   // 0 is success
+int WSAStartup(int version, WSADATA *ws) 
+{ 
+    // ignore SIGPIPE signal (socket closed), avoid to terminate main thread !!
+    signal(SIGPIPE, SIG_IGN);
+    return 0; 
+}   // 0 is success
 int WSACleanup()                         { return 0; }
 
 
