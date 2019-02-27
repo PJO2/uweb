@@ -11,7 +11,7 @@
 
 
 
-#define UWEB_VERSION "1.2"
+#define UWEB_VERSION "1.3"
 
 const char SYNTAX[] = ""
 "uweb: Usage\n"
