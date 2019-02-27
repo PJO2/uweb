@@ -698,7 +698,8 @@ const char *GetHtmlContentType(const char *os_extension)
 		if (strcasecmp (sHtmlTypes[ark].ext, os_extension) == 0) break;
 	if (ark >= sizeof(sHtmlTypes) / sizeof(sHtmlTypes[0]))
 	{
-		SVC_ERROR("Unregistered file extension");
+		if (sSettings.szDefaultContentType==NULL)
+		    SVC_ERROR("Unregistered file extension");
 		return sSettings.szDefaultContentType;		// NULL if not overridden
 	}
 	return (char *) sHtmlTypes[ark].filetype;
