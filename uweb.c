@@ -662,12 +662,13 @@ int LogTransfer(const struct S_ThreadData *pData, int when, int http_status)
 
     	    case LOG_END:
 		StringCchPrintf(szBuf, sizeof szBuf, "From %s:%s, GET %s: %" PRIu64 " bytes sent, status : %d",
-			szAddr, szServ, pData->file_name,
+			szAddr, szServ, pData->file_name==NULL ? "unknown" : pData->file_name,
 			pData->qwFileCurrentPos, http_status );
 		break;
     	    case LOG_RESET:
 		StringCchPrintf(szBuf, sizeof szBuf, "GET %s: Reset by %s:%s, %" PRIu64 " bytes sent, status : %d",
-			pData->file_name, szAddr, szServ, 
+			pData->file_name==NULL ? "unknown" : pData->file_name,  
+                        szAddr, szServ, 
 			pData->qwFileCurrentPos, http_status );
 		break;
 	}
@@ -763,7 +764,13 @@ int DecodeHttpRequest(struct S_ThreadData *pData, int request_length)
 	}
 	// get canonical name && locate the file name location
 	// Valid since we are in the main thread
-	GetFullPathName(pData->url_filename, MAX_PATH, pData->long_filename, &pData->file_name);
+	if ( ! GetFullPathName(pData->url_filename, MAX_PATH, pData->long_filename, &pData->file_name) )
+        {
+                SVC_ERROR("invalid File formatting");
+		pData->file_name = NULL;
+                return HTTP_BADREQUEST;
+        }
+
 	if (pData->file_name == NULL)
 		pData->file_type = NULL;
 	else
