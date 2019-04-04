@@ -1,6 +1,6 @@
 // --------------------------------------------------------
 // uweb : a minimal web server which compile under MacOS, Linux and Windows
-// by Ph. Jounin jan 2019
+// by Ph. Jounin April 2019
 // 
 // License: GPLv2
 // Sources : 
@@ -9,9 +9,14 @@
 // ---------------------------------------------------------
 
 
+// Changes:
+// from 1.3
+//  - add reuse port and reuse address socket option
+//  - add HEAD request processing
+//  - display the incoming request with the -vv option
+//  - change buffer size to 5 x MSS
 
-
-#define UWEB_VERSION "1.3"
+#define UWEB_VERSION "1.4"
 
 const char SYNTAX[] = ""
 "uweb: Usage\n"
@@ -27,7 +32,7 @@ const char SYNTAX[] = ""
 "\n      -i   listen only this address"
 "\n      -p   HTTP port (defaut is 8080)"
 "\n      -s   maximum simultaneous connections (default is 1024)"
-"\n      -v   verbose"
+"\n      -v   verbose (can be used up to 5 times)"
 "\n      -x   set the default page for a directory (default is index.html)"
 "\n";
 
@@ -88,6 +93,10 @@ void _killthread (THREAD_ID ThId)      { TerminateThread (ThId, -1); }
 // millisecond sleep (native for Windows, not for unix)
 void ssleep (int msec)                 { Sleep (msec); }
 
+// socket portability
+#ifndef SO_REUSEPORT
+#  define SO_REUSEPORT 0
+#endif
 
 #endif
 
@@ -213,10 +222,10 @@ int CloseHandle (THREAD_ID ThId)             { return 0; }
 // default parameters
 // ---------------------------------------------------------
 
-#define DEFAULT_BURST_PKTS    2
+#define DEFAULT_BURST_PKTS    5
 #define DEFAULT_BUFLEN       (1448*DEFAULT_BURST_PKTS)    // buffer size for reading HTTP command and file content (2 pkts of 1500 bytes)
 char DEFAULT_PORT[] =  "8080"    ;
-#define DEFAULT_MAXTHREADS   1024             // maximum simultaneous connections
+#define DEFAULT_MAXTHREADS   1024       // maximum simultaneous connections
 char DEFAULT_HTMLFILE[] = "index.html"; // if request is "GET / HTTP/1.1"
 
 // params passed to logger funcion
@@ -235,6 +244,11 @@ enum     { HTTP_OK=200,
 	   HTTP_TYPENOTSUPPORTED=415, 
 	   HTTP_SERVERERROR=500 };
 
+// requests processed by uweb
+enum {    HTTP_GET = 1,
+	      HTTP_HEAD,  };
+
+// Reporting
 struct S_ErrorCodes
 {
 	int	    status_code;
@@ -288,8 +302,9 @@ enum e_THREADSTATUS { THREAD_STATE_INIT, THREAD_STATE_RUNNING, THREAD_STATE_EXIT
 // The structure for each transfer
 struct S_ThreadData
 {
+	int         request;	// GET or HEAD
 	SOCKET      skt;			// the transfer skt
-	SOCKADDR_STORAGE sa;			// keep track of the client
+	SOCKADDR_STORAGE sa;		// keep track of the client
 	char       *buf;			// buffer for communication allocated in main thread
 	unsigned    buflen;			// sizeof this buffer
 	char        url_filename[MAX_PATH];	// URL to be retrieved
@@ -301,7 +316,7 @@ struct S_ThreadData
 	DWORD64     qwFileSize;			// total size of the file
 	time_t      tStartTrf;			// when the transfer has started
 
-	THREAD_ID   ThreadId;		        // thread data (posix) or Id (Windows)
+	THREAD_ID   ThreadId;		       // thread data (posix) or Id (Windows)
 	THREADSTATUS ThStatus;                  // thread status
 
 											// link
@@ -533,6 +548,7 @@ SOCKET BindServiceSocket(const char *port, const char *sz_bind_addr)
 	SOCKET             sListenSocket = INVALID_SOCKET;
 	int                Rc;
 	ADDRINFO           Hints, *res, *cur;
+	int                True = 1;
 
 	memset(&Hints, 0, sizeof Hints);
 	if (sSettings.bIPv4)     	Hints.ai_family = AF_INET;   // force IPv4
@@ -583,6 +599,14 @@ SOCKET BindServiceSocket(const char *port, const char *sz_bind_addr)
 		closesocket(sListenSocket);
 		return INVALID_SOCKET;
 	}
+	// allow socket to be reopened quickly
+	Rc = setsockopt(sListenSocket, SOL_SOCKET, SO_REUSEPORT | SO_REUSEADDR, (char*)& True, sizeof True);
+	if (Rc == INVALID_SOCKET)
+	{
+		SVC_ERROR("Error : Can't not activate reuse mode, will continue anymay\nError %d (%s)",
+		          GetLastError(), LastErrorText());
+	}
+
 	// create the listen queue
 	Rc = listen(sListenSocket, LISTENING_QUEUE_SIZE);
 	if (Rc == -1)
@@ -663,6 +687,8 @@ int LogTransfer(const struct S_ThreadData *pData, int when, int http_status)
 	switch (when)
 	{
 	    case LOG_BEGIN:
+		if (sSettings.uVerbose >= 2) 
+			puts(pData->buf);
 		StringCchPrintf(szBuf, sizeof szBuf, "From %s:%s, GET %s. burst size %d", 
 			szAddr, szServ, pData->file_name, pData->buflen);
 		break;
@@ -722,9 +748,14 @@ BOOL ExtractFileName(const char *szHttpRequest, int request_length, char *szFile
 	if (request_length < sizeof "GET / HTTP/1.x\n" - 1) return FALSE;
 
 
-	// set beginning of filename, then find its end (first space)
+	// search second word (first has already been decoded) and space has been checked
+	for (pCur = szHttpRequest; *pCur != ' '; pCur++);  // skip first word
+	for (; *pCur == ' '; pCur++);  // go to second word
+
 	// file name is supposed to start with '/', anyway accepts if / is missing
-	pCur = szHttpRequest[4] == '/' ? &szHttpRequest[5] : &szHttpRequest[4];
+	for (; *pCur == '/'; pCur++);  // skip  /
+
+	// go to end of line
 	pEnd = strpbrk(pCur, "\r\n ?");
 	if (*pEnd != ' ' && *pEnd != '?')		// if anormal endings
 	{
@@ -757,9 +788,16 @@ int DecodeHttpRequest(struct S_ThreadData *pData, int request_length)
 		exit(-2);
 	pData->buf[request_length++] = 0;
 
-	// ensure request is a GET
+	// dump complete request
+	if (sSettings.uVerbose >= 4) puts(pData->buf);
+
+	// ensure request is a GET or HEAD
 	CharUpperBuff(pData->buf, sizeof "GET " - 1);
-	if (memcmp(pData->buf, "GET ", sizeof "GET " - 1) != 0)
+	if (memcmp(pData->buf, "GET ", sizeof "GET " - 1) == 0)
+		pData->request = HTTP_GET;
+	else if (memcmp(pData->buf, "HEAD ", sizeof "HEAD " - 1) == 0)
+		pData->request = HTTP_HEAD;
+	else  // reject other requests !
 	{
 		SVC_ERROR("Only Simple GET operations supported");
 		return HTTP_METHODNOTALLOWED;
@@ -867,30 +905,33 @@ THREAD_RET WINAPI HttpTransferThread(void * lpParam)
 	send(pData->skt, pData->buf, strlen(pData->buf), 0);
 	LogTransfer(pData, LOG_BEGIN, 0);
 
-	iHttpStatus = HTTP_PARTIAL;
-	do
+	if (pData->request == HTTP_GET)
 	{
-		bytes_read = fread (pData->buf, 1, pData->buflen, pData->hFile);
-        	bytes_sent = send(pData->skt, pData->buf, bytes_read, 0);
-		pData->qwFileCurrentPos += bytes_read;
+		iHttpStatus = HTTP_PARTIAL;
+		do
+		{
+			bytes_read = fread(pData->buf, 1, pData->buflen, pData->hFile);
+			bytes_sent = send(pData->skt, pData->buf, bytes_read, 0);
+			pData->qwFileCurrentPos += bytes_read;
 
-		if (pData->buflen==bytes_read &&  IsTransferCancelledByPeer(pData->skt)) 
-        {
-			LogTransfer (pData, LOG_RESET, HTTP_PARTIAL);
-			break;
-        }
-         if (sSettings.uVerbose>4) 
-                   printf ("read %d bytes from %s\n", bytes_read, pData->long_filename);
+			if (pData->buflen == bytes_read && IsTransferCancelledByPeer(pData->skt))
+			{
+				LogTransfer(pData, LOG_RESET, HTTP_PARTIAL);
+				break;
+			}
+			if (sSettings.uVerbose > 4)
+				printf("read %d bytes from %s\n", bytes_read, pData->long_filename);
 
-		if (sSettings.slow_down) ssleep(sSettings.slow_down);
-	} while (bytes_read>0);
+			if (sSettings.slow_down) ssleep(sSettings.slow_down);
+		} while (bytes_read > 0);
 
-	if ( bytes_read==0 && !feof(pData->hFile) )	//note: if transfer cancelled report OK anyway
-	{
-		SVC_ERROR("Error in ReadFile\nError %d (%s)", GetLastError(), LastErrorText());
-		iHttpStatus = HTTP_SERVERERROR;
-		goto cleanup;
-	}
+		if (bytes_read == 0 && !feof(pData->hFile))	//note: if transfer cancelled report OK anyway
+		{
+			SVC_ERROR("Error in ReadFile\nError %d (%s)", GetLastError(), LastErrorText());
+			iHttpStatus = HTTP_SERVERERROR;
+			goto cleanup;
+		}
+	} // HTTP GET request
 	// if we reach this point file was successfully sent
 	iHttpStatus = HTTP_OK;
 
