@@ -799,7 +799,7 @@ int DecodeHttpRequest(struct S_ThreadData *pData, int request_length)
 		pData->request = HTTP_HEAD;
 	else  // reject other requests !
 	{
-		SVC_ERROR("Only Simple GET operations supported");
+		SVC_ERROR("Only Simple GET and HEAD operations supported");
 		return HTTP_METHODNOTALLOWED;
 	}
 	// extract file name
