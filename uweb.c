@@ -696,14 +696,14 @@ int LogTransfer(const struct S_ThreadData *pData, int when, int http_status)
 		break;
 
     	    case LOG_END:
-		StringCchPrintf(szBuf, (int) sizeof szBuf, "From %s:%s, GET %s: %" PRIu64 " bytes sent, status : %d, time spent %ds",
+		StringCchPrintf(szBuf, sizeof szBuf, "From %s:%s, GET %s: %" PRIu64 " bytes sent, status : %d, time spent %ds",
 			szAddr, szServ, pData->file_name==NULL ? "unknown" : pData->file_name,
 			pData->qwFileCurrentPos, http_status, 
 			time(NULL) - pData->tStartTrf
 		);
 		break;
     	    case LOG_RESET:
-		StringCchPrintf(szBuf, (int) sizeof szBuf, "GET %s: Reset by %s:%s, %" PRIu64 " bytes sent, status : %d, time spent %ds",
+		StringCchPrintf(szBuf, sizeof szBuf, "GET %s: Reset by %s:%s, %" PRIu64 " bytes sent, status : %d, time spent %ds",
 			pData->file_name==NULL ? "unknown" : pData->file_name,  
                         szAddr, szServ, 
 			pData->qwFileCurrentPos, http_status,
