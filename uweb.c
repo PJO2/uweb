@@ -15,8 +15,10 @@
 //  - add HEAD request processing
 //  - display the incoming request with the -vv option
 //  - change buffer size to 5 x MSS
+// from 1.4
+// - display time spent after a tranfer
 
-#define UWEB_VERSION "1.4"
+#define UWEB_VERSION "1.5"
 
 const char SYNTAX[] = ""
 "uweb: Usage\n"
@@ -694,15 +696,19 @@ int LogTransfer(const struct S_ThreadData *pData, int when, int http_status)
 		break;
 
     	    case LOG_END:
-		StringCchPrintf(szBuf, sizeof szBuf, "From %s:%s, GET %s: %" PRIu64 " bytes sent, status : %d",
+		StringCchPrintf(szBuf, (int) sizeof szBuf, "From %s:%s, GET %s: %" PRIu64 " bytes sent, status : %d, time spent %ds",
 			szAddr, szServ, pData->file_name==NULL ? "unknown" : pData->file_name,
-			pData->qwFileCurrentPos, http_status );
+			pData->qwFileCurrentPos, http_status, 
+			time(NULL) - pData->tStartTrf
+		);
 		break;
     	    case LOG_RESET:
-		StringCchPrintf(szBuf, sizeof szBuf, "GET %s: Reset by %s:%s, %" PRIu64 " bytes sent, status : %d",
+		StringCchPrintf(szBuf, (int) sizeof szBuf, "GET %s: Reset by %s:%s, %" PRIu64 " bytes sent, status : %d, time spent %ds",
 			pData->file_name==NULL ? "unknown" : pData->file_name,  
                         szAddr, szServ, 
-			pData->qwFileCurrentPos, http_status );
+			pData->qwFileCurrentPos, http_status,
+			time(NULL) - pData->tStartTrf
+		);
 		break;
 	}
 	return	puts(szBuf);
