@@ -1,6 +1,6 @@
 // --------------------------------------------------------
 // uweb : a minimal web server which compile under MacOS, Linux and Windows
-// by Ph. Jounin April 2019
+// by Ph. Jounin September 2019
 // 
 // License: GPLv2
 // Sources : 
@@ -17,8 +17,12 @@
 //  - change buffer size to 5 x MSS
 // from 1.4
 // - display time spent after a tranfer
+// from 1.5
+// - file not found: earlier detection
+// - add mentions of -ct and -cb in unspported media type report
+// - header Server change from mweb to uweb
 
-#define UWEB_VERSION "1.5"
+#define UWEB_VERSION "1.6"
 
 const char SYNTAX[] = ""
 "uweb: Usage\n"
@@ -138,6 +142,7 @@ enum { FALSE=0, TRUE };
 
 // ---      system library
 int GetLastError(void)     { return errno; }
+#define ERROR_FILE_NOT_FOUND ENOENT
 void ssleep (int msec)     { sleep (msec / 1000); usleep ((msec % 1000) * 1000); }
 int min(int a, int b)      { return (a < b ? a : b); }
 
@@ -262,14 +267,15 @@ sErrorCodes[] =
     { HTTP_BADREQUEST,	      "Bad Request",            "HTTP malformed request syntax.",  },
     { HTTP_NOTFOUND,	      "Not Found",              "The requested URL was not found on this server.",  },
     { HTTP_SECURITYVIOLATION, "Forbidden",              "Directory traversal attack detected.",             },
-    { HTTP_TYPENOTSUPPORTED,  "Unsupported Media Type", "The requested file type is not allowed on this simple static file webserver.", },
-    { HTTP_METHODNOTALLOWED,  "Method Not Allowed",     "The requested file operation is not allowed on this simple static file webserver.", },
+    { HTTP_TYPENOTSUPPORTED,  "Unsupported Media Type", "The requested file type is not allowed on this static file webserver.<br>\
+                                                         Options -ct or -cb will override this control.", },
+    { HTTP_METHODNOTALLOWED,  "Method Not Allowed",     "The requested file operation is not allowed on this static file webserver.", },
     { HTTP_SERVERERROR,       "Internal Server Error",  "Internal Server Error, can not access to file anymore.", },
 };
 
 // HTML and HTTP message return on Error
 const char szHTMLErrFmt[]  = "<html><head>\n<title>%d %s</title>\n</head><body>\n<h1>%s</h1>\n%s\n</body></html>\n";
-const char szHTTPDataFmt[] = "HTTP/1.1 %d %s\nServer: mweb-%s\nContent-Length: %" PRIu64 "\nConnection: close\nContent-Type: %s\n\n";
+const char szHTTPDataFmt[] = "HTTP/1.1 %d %s\nServer: uweb-%s\nContent-Length: %" PRIu64 "\nConnection: close\nContent-Type: %s\n\n";
 
 
 
@@ -814,11 +820,23 @@ int DecodeHttpRequest(struct S_ThreadData *pData, int request_length)
 		SVC_ERROR("invalid HTTP formatting");
 		return HTTP_BADREQUEST;
 	}
+
+        // dry-run : try to open it (sanaty checks not done)
+	pData->hFile = fopen (pData->url_filename, "rb");
+        if (pData->hFile==NULL)   
+        {
+                SVC_ERROR("file %s not found/access denied", pData->url_filename);
+                return HTTP_NOTFOUND;
+        }
+        fclose (pData->hFile);
+
 	// get canonical name && locate the file name location
 	// Valid since we are in the main thread
 	if ( ! GetFullPathName(pData->url_filename, MAX_PATH, pData->long_filename, &pData->file_name) )
         {
-                SVC_ERROR("invalid File formatting");
+                if (GetLastError()==ERROR_FILE_NOT_FOUND)   
+                        SVC_ERROR("File |%s| not found", pData->url_filename);
+                else    SVC_ERROR("%s: invalid File formatting", pData->url_filename);
 		pData->file_name = NULL;
                 return HTTP_BADREQUEST;
         }
@@ -842,11 +860,8 @@ int DecodeHttpRequest(struct S_ThreadData *pData, int request_length)
 } // DecodeHttpRequest
 
 
-  // we don't expect anything from client, but it may abort the connection 
 
-
-
-  // Thread base
+// Thread base
 THREAD_RET WINAPI HttpTransferThread(void * lpParam)
 {
 	int      bytes_rcvd;
