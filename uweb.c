@@ -21,6 +21,7 @@
 // - file not found: earlier detection
 // - add mentions of -ct and -cb in unspported media type report
 // - header Server change from mweb to uweb
+// - add option -V to display version
 
 #define UWEB_VERSION "1.6"
 
@@ -39,6 +40,7 @@ const char SYNTAX[] = ""
 "\n      -p   HTTP port (defaut is 8080)"
 "\n      -s   maximum simultaneous connections (default is 1024)"
 "\n      -v   verbose (can be used up to 5 times)"
+"\n      -V   display version and exit"
 "\n      -x   set the default page for a directory (default is index.html)"
 "\n";
 
@@ -1188,6 +1190,8 @@ int ParseCmdLine(int argc, char *argv[])
 			case 'v': for (idx=1;  argv[ark][idx]=='v' ; idx++) 
                                        sSettings.uVerbose++;      
                                   break;
+			case 'V': printf ("uweb version %s\n", UWEB_VERSION);
+                                  exit(0);
 			case 'x': sSettings.szDefaultHtmlFile = argv[++ark];   break;
 				break;
 			default:
