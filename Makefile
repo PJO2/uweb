@@ -6,7 +6,7 @@ EXEC=uweb
 
 all: $(EXEC)
 
-$(EXEC): uweb.c
+$(EXEC): uweb.c log.c
 	$(CC) -o $@ $^ $(CFLAGS) $(LDFLAGS)
 
 clean:
