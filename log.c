@@ -30,7 +30,7 @@ va_list args;
    vsnprintf (buff, sizeof buff, fmt, args);
    buff[sizeof buff - 1] = 0;
    va_end (args);
-   fprintf (verbose_level<=ERROR ? stderr : stdout, buff);   
+   fputs (buff, verbose_level<=ERROR ? stderr : stdout);   
 } // LOG
 
 
