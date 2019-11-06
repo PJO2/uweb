@@ -1,6 +1,6 @@
 // --------------------------------------------------------
 // uweb : a minimal web server which compile under MacOS, Linux and Windows
-// by Ph. Jounin September 2019
+// by Ph. Jounin November 2019
 // 
 // License: GPLv2
 // Sources : 
@@ -22,13 +22,20 @@
 // - add mentions of -ct and -cb in unspported media type report
 // - header Server change from mweb to uweb
 // - add option -V to display version
+// from 1.6
+// - encapsulate all terminal outputs into function log
+// - change default log level to WARN (and add -quiet option)
+// - data and structures sent to h files
+// - Windows release compiled with Pelles C
+// - set hFile pointer to INVALID_FILE_VALUE after dry run opening
 
-#define UWEB_VERSION "1.6"
+
+#define UWEB_VERSION "1.7"
 
 const char SYNTAX[] = ""
 "uweb: Usage\n"
 "\n uweb   [-4|-6] [-p port] [-d dir] [-i addr] [-c content-type|-ct|-cb]"
-"\n        [-g msec] [-s max connections] [-verbose] [-x file]\n"
+"\n        [-g msec] [-s max connections] [-verbose] [-quiet] [-x file]\n"
 "\n      -4   IPv4 only"
 "\n      -6   IPv6 only"
 "\n      -c   content-type assigned to unknown files"
@@ -38,6 +45,7 @@ const char SYNTAX[] = ""
 "\n      -g   slow down transfer by waiting for x msc between two frames"
 "\n      -i   listen only this address"
 "\n      -p   HTTP port (defaut is 8080)"
+"\n      -q   quiet (decrease log level)"
 "\n      -s   maximum simultaneous connections (default is 1024)"
 "\n      -v   verbose (can be used up to 5 times)"
 "\n      -V   display version and exit"
@@ -63,7 +71,7 @@ const char SYNTAX[] = ""
 // Windows portability tweaks
 // ---------------------------------------------------------
 
-#ifdef _MSC_VER
+#if defined (_MSC_VER) || defined (__POCC__)
 
 
 #undef UNICODE
@@ -118,7 +126,6 @@ void ssleep (int msec)                 { Sleep (msec); }
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <stdarg.h>
 #include <stdint.h>
 #include <inttypes.h>
 #include <ctype.h>
@@ -220,214 +227,23 @@ int CloseHandle (THREAD_ID ThId)             { return 0; }
 // end of tweaks 
 // ---------------------------------------------------------
 
+#include "log.h"
+#include "uweb.h"
+#include "html_extensions.h"
 
 
-//////////////////////////////////
-// uWeb States and settings
-//////////////////////////////////
-
-
-// ---------------------------------------------------------
-// default parameters
-// ---------------------------------------------------------
-
-#define DEFAULT_BURST_PKTS    5
-#define DEFAULT_BUFLEN       (1448*DEFAULT_BURST_PKTS)    // buffer size for reading HTTP command and file content (2 pkts of 1500 bytes)
-char DEFAULT_PORT[] =  "8080"    ;
-#define DEFAULT_MAXTHREADS   1024       // maximum simultaneous connections
-char DEFAULT_HTMLFILE[] = "index.html"; // if request is "GET / HTTP/1.1"
-
-// params passed to logger funcion
-enum { LOG_BEGIN, LOG_END, LOG_RESET };		// 
-
-// ---------------------------------------------------------
-// Error codes and text
-// ---------------------------------------------------------
-// managed status code
-enum     { HTTP_OK=200, 
-           HTTP_PARTIAL=206, 
-	   HTTP_BADREQUEST=400, 
-	   HTTP_SECURITYVIOLATION=403, 
-	   HTTP_NOTFOUND=404, 
-	   HTTP_METHODNOTALLOWED=405, 
-	   HTTP_TYPENOTSUPPORTED=415, 
-	   HTTP_SERVERERROR=500 };
-
-// requests processed by uweb
-enum {    HTTP_GET = 1,
-	      HTTP_HEAD,  };
-
-// Reporting
-struct S_ErrorCodes
-{
-	int	    status_code;
-	const char *txt_content;
-	const char *html_content;
-}
-sErrorCodes[] = 
-{	
-    { HTTP_BADREQUEST,	      "Bad Request",            "HTTP malformed request syntax.",  },
-    { HTTP_NOTFOUND,	      "Not Found",              "The requested URL was not found on this server.",  },
-    { HTTP_SECURITYVIOLATION, "Forbidden",              "Directory traversal attack detected.",             },
-    { HTTP_TYPENOTSUPPORTED,  "Unsupported Media Type", "The requested file type is not allowed on this static file webserver.<br>\
-                                                         Options -ct or -cb will override this control.", },
-    { HTTP_METHODNOTALLOWED,  "Method Not Allowed",     "The requested file operation is not allowed on this static file webserver.", },
-    { HTTP_SERVERERROR,       "Internal Server Error",  "Internal Server Error, can not access to file anymore.", },
-};
-
-// HTML and HTTP message return on Error
-const char szHTMLErrFmt[]  = "<html><head>\n<title>%d %s</title>\n</head><body>\n<h1>%s</h1>\n%s\n</body></html>\n";
-const char szHTTPDataFmt[] = "HTTP/1.1 %d %s\nServer: uweb-%s\nContent-Length: %" PRIu64 "\nConnection: close\nContent-Type: %s\n\n";
-
-
-
-  // ---------------------------------------------------------
-  // Operationnal states : settings, HTML types  and thread data
-  // ---------------------------------------------------------
-
-// Set to False if interruption
-BOOL GO_ON=TRUE;
-
-const int SELECT_TIMEOUT = 5;  // every 5 seconds, look for terminated threads
-const int LISTENING_QUEUE_SIZE = 3; // do not need a large queue
-
-// uweb Settings 
-struct S_Settings
-{
-	int   uVerbose;
-	BOOL  bIPv4;
-	BOOL  bIPv6;
-	char  *szPort;
-	char  *szBoundTo;
-	const char  *szDefaultHtmlFile;
-	const char  *szDefaultContentType;	// all files accepted with this content-type
-	int    max_threads;		// maximum simultaneous connections
-	int    slow_down;               // msec to wait between two frames
-}
-sSettings = { FALSE, FALSE, FALSE, DEFAULT_PORT, NULL,  DEFAULT_HTMLFILE, NULL, DEFAULT_MAXTHREADS, FALSE };
-
-typedef enum e_THREADSTATUS    THREADSTATUS ;
-enum e_THREADSTATUS { THREAD_STATE_INIT, THREAD_STATE_RUNNING, THREAD_STATE_EXITING, THREAD_STATE_DOWN };
-
-// The structure for each transfer
-struct S_ThreadData
-{
-	int         request;	// GET or HEAD
-	SOCKET      skt;			// the transfer skt
-	SOCKADDR_STORAGE sa;		// keep track of the client
-	char       *buf;			// buffer for communication allocated in main thread
-	unsigned    buflen;			// sizeof this buffer
-	char        url_filename[MAX_PATH];	// URL to be retrieved
-	char        long_filename[MAX_PATH];	// canonical file name with path
-	char       *file_name;			// pointer inside long_filename
-	char       *file_type;			// pointer inside long_filename
-	FILE       *hFile;			// file handle
-	DWORD64     qwFileCurrentPos;		// pos in file (also the number of bytes sent to the client)
-	DWORD64     qwFileSize;			// total size of the file
-	time_t      tStartTrf;			// when the transfer has started
-
-	THREAD_ID   ThreadId;		       // thread data (posix) or Id (Windows)
-	THREADSTATUS ThStatus;                  // thread status
-
-											// link
-	struct S_ThreadData *next;
-}
-*pThreadDataHead;			// array allocated in main
-
+// Thread database
+struct S_ThreadData  *pThreadDataHead;			// array allocated in main
 int nbThreads = 0;                      // # running threads
 
 
-// known extensions for HTML content-type resolution
-// from https://developer.mozilla.org/nl/docs/Web/HTTP/Basics_of_HTTP/MIME_types/Complete_list_of_MIME_types
-// automatially generated from this url with the excel formula : 
-// IF(C2="";CONCAT(" { """;A2;"""";", """;C1;""" }, ");CONCAT(" { """;A2;"""";", """;C2;""" }, "))
-
-const struct {
-	const char *ext;
-	const char *filetype;
-} sHtmlTypes[] = {
-	{ ".aac", "audio/aac" },
-	{ ".abw", "application/x-abiword" },
-	{ ".arc", "application/octet-stream" },
-	{ ".avi", "video/x-msvideo" },
-	{ ".azw", "application/vnd.amazon.ebook" },
-	{ ".bin", "application/octet-stream" },
-	{ ".bz", "application/x-bzip" },
-	{ ".bz2", "application/x-bzip2" },
-	{ ".csh", "application/x-csh" },
-	{ ".css", "text/css" },
-	{ ".csv", "text/csv" },
-	{ ".doc", "application/msword" },
-	{ ".eot", "application/vnd.ms-fontobject" },
-	{ ".epub", "application/epub+zip" },
-	{ ".gif", "image/gif" },
-	{ ".htm", "text/html" },
-	{ ".html", "text/html" },
-	{ ".ico", "image/x-icon" },
-	{ ".ics", "text/calendar" },
-	{ ".jar",  "application/java-archive" },
-	{ ".jpeg", "image/jpeg" },
-	{ ".jpg",  "image/jpeg" },
-	{ ".js",   "application/javascript" },
-	{ ".json", "application/json" },
-	{ ".mid", "audio/midi" },
-	{ ".mid", "audio/midi" },
-	{ ".mpeg", "video/mpeg" },
-	{ ".mpkg", "application/vnd.apple.installer+xml" },
-	{ ".odp", "application/vnd.oasis.opendocument.presentation" },
-	{ ".ods", "application/vnd.oasis.opendocument.spreadsheet" },
-	{ ".odt", "application/vnd.oasis.opendocument.text" },
-	{ ".oga", "audio/ogg" },
-	{ ".ogv", "video/ogg" },
-	{ ".ogx", "application/ogg" },
-	{ ".otf", "font/otf" },
-	{ ".png", "image/png" },
-	{ ".pdf", "application/pdf" },
-	{ ".ppt", "application/vnd.ms-powerpoint" },
-	{ ".rar", "application/x-rar-compressed" },
-	{ ".rtf", "application/rtf" },
-	{ ".sh", "application/x-sh" },
-	{ ".svg", "image/svg+xml" },
-	{ ".swf", "application/x-shockwave-flash" },
-	{ ".tar", "application/x-tar" },
-	{ ".tif", "image/tiff" },
-	{ ".tiff", "image/tiff" },
-	{ ".ts", "application/typescript" },
-	{ ".ttf", "font/ttf" },
-	{ ".vsd", "application/vnd.visio" },
-	{ ".wav", "audio/x-wav" },
-	{ ".weba", "audio/webm" },
-	{ ".webm", "video/webm" },
-	{ ".webp", "image/webp" },
-	{ ".woff", "font/woff" },
-	{ ".woff2", "font/woff2" },
-	{ ".xhtml", "application/xhtml+xml" },
-	{ ".xls", "application/vnd.ms-excel" },
-	{ ".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
-	{ ".xml", "application/xml" },
-	{ ".xul", "application/vnd.mozilla.xul+xml" },
-	{ ".zip", "application/zip" },
-	{ ".3gp", "video/3gpp" },
-	{ ".3g2", "video/3gpp2" },
-	{ ".7z", "application/x-7z-compressed" },
-
-// add-ons
-	{ ".mp4",  "video/mpeg" }, 
-	{ ".mpg",  "video/mpeg" }, 
-	{ ".iso",  "application/iso" }, 
-	{ ".txt",  "text/plain" }, 
-	{ ".text", "text/plain" }, 
-};
-
-// is option -c activate default :
-const char DEFAULT_BINARY_TYPE[] = "application/octet-stream";
-const char DEFAULT_TEXT_TYPE[]   = "text/plain";
+// status passed to logger funcion
+enum { LOG_BEGIN, LOG_END, LOG_RESET };
 
 
 /////////////////////////////////////////////////////////////////
 // utilities functions :
 //      - report error
-//      - Send HTTP pre formatted answer
 /////////////////////////////////////////////////////////////////
 
 
@@ -444,20 +260,6 @@ static char szLastErrorText[512];
 
 
 
-  // report an error to console using puts
-void SVC_ERROR(const char *szFmt, ...)
-{
-	va_list args;
-	// if (sSettings.uVerbose)
-	{
-		va_start(args, szFmt);
-		vfprintf(stderr, szFmt, args);
-		fprintf(stderr, "\n");
-		va_end(args);
-	}
-} // SVC_ERROR
-
-
   /////////////////////////////////////////////////////////////////
   // utilities socket operations :
   //	 - check that socket is still opened by listen at it
@@ -468,7 +270,7 @@ void SVC_ERROR(const char *szFmt, ...)
   //      - send HTTP error
   /////////////////////////////////////////////////////////////////
 
-  // a Windows wrapper to  call WSAStartup...
+// a Windows wrapper to  call WSAStartup...
 int InitSocket()
 {
 	WSADATA  wsa;
@@ -477,7 +279,7 @@ int InitSocket()
 	iResult = 1;
 	if (iResult < 0)
 	{
-		SVC_ERROR("Error : WSAStartup failed\nError %d (%s)", GetLastError(), LastErrorText());
+		LOG (FATAL, "Error : WSAStartup failed\nError %d (%s)\n", GetLastError(), LastErrorText());
 		exit(-1);    // no recovery
 	}
 	return iResult;
@@ -509,7 +311,7 @@ int GetSocketMSS(SOCKET skt)
 	iResult = getsockopt(skt, IPPROTO_TCP, TCP_MAXSEG, (char*) & tcp_mss , & opt_len);
 	if (iResult < 0)
 	{
-		SVC_ERROR("Failed to get TCP_MAXSEG for master socket.\nError %d (%s)", 
+		LOG (FATAL, "Failed to get TCP_MAXSEG for master socket.\nError %d (%s)\n", 
                            GetLastError(), LastErrorText());
 		return -1;
 	}
@@ -537,15 +339,14 @@ int dump_addrinfo(ADDRINFO *runp)
 	char hostbuf[50], portbuf[10];
 	int e;
 
-	if (sSettings.uVerbose>1)
-               printf("family: %d, socktype: %d, protocol: %d, ", runp->ai_family, runp->ai_socktype, runp->ai_protocol);
+        LOG (INFO, "family: %d, socktype: %d, protocol: %d, ", runp->ai_family, runp->ai_socktype, runp->ai_protocol);
 	e = getnameinfo(
 			runp->ai_addr, runp->ai_addrlen,
 			hostbuf, sizeof(hostbuf),
 			portbuf, sizeof(portbuf),
 			NI_NUMERICHOST | NI_NUMERICSERV
 	);
-	printf("host: %s, port: %s\n", hostbuf, portbuf);
+	LOG (WARN, "host: %s, port: %s\n", hostbuf, portbuf);
        __DUMMY(e);
 return 0;
 }
@@ -565,13 +366,13 @@ SOCKET BindServiceSocket(const char *port, const char *sz_bind_addr)
 	else if (sSettings.bIPv6)  	Hints.ai_family = AF_INET6;   // force IPv6
 	else                            Hints.ai_family = AF_UNSPEC;    // use IPv4 or IPv6, whichever
 
-																	// resolve the address and port we want to bind the server
+	// resolve the address and port we want to bind the server
 	Hints.ai_socktype = SOCK_STREAM;
 	Hints.ai_flags = AI_PASSIVE;     // fill in my IP for me
 	Rc = getaddrinfo(sz_bind_addr, port, &Hints, &res);
 	if (Rc != 0)
 	{
-		SVC_ERROR("Error : specified address %s is not recognized\nError %d (%s)", 
+		LOG (ERROR, "Error : specified address %s is not recognized\nError %d (%s)\n", 
 			  sz_bind_addr, GetLastError(), LastErrorText());
 		return INVALID_SOCKET;
 	}
@@ -588,7 +389,7 @@ SOCKET BindServiceSocket(const char *port, const char *sz_bind_addr)
 	sListenSocket = socket(cur->ai_family, cur->ai_socktype, cur->ai_protocol);
 	if (sListenSocket == INVALID_SOCKET)
 	{
-		SVC_ERROR("Error : Can't create socket\nError %d (%s)", GetLastError(), LastErrorText());
+		LOG (ERROR, "Error : Can't create socket\nError %d (%s)\n", GetLastError(), LastErrorText());
 		return INVALID_SOCKET;
 	}
 
@@ -601,27 +402,28 @@ SOCKET BindServiceSocket(const char *port, const char *sz_bind_addr)
 		Rc = setsockopt(sListenSocket, IPPROTO_IPV6, IPV6_V6ONLY, (char*)& Param, sizeof Param);
 	}
 
-	// bind the socket to the active interface
-	Rc = bind(sListenSocket, cur->ai_addr, cur->ai_addrlen);
-	if (Rc == INVALID_SOCKET)
-	{
-		SVC_ERROR("Error : Can't not bind socket\nError %d (%s)", GetLastError(), LastErrorText());
-		closesocket(sListenSocket);
-		return INVALID_SOCKET;
-	}
 	// allow socket to be reopened quickly
 	Rc = setsockopt(sListenSocket, SOL_SOCKET, SO_REUSEPORT | SO_REUSEADDR, (char*)& True, sizeof True);
 	if (Rc == INVALID_SOCKET)
 	{
-		SVC_ERROR("Error : Can't not activate reuse mode, will continue anymay\nError %d (%s)",
+		LOG (WARN, "Error : Can't not activate reuse mode, will continue anymay\nError %d (%s)\n",
 		          GetLastError(), LastErrorText());
+	}
+
+	// bind the socket to the active interface
+	Rc = bind(sListenSocket, cur->ai_addr, cur->ai_addrlen);
+	if (Rc == INVALID_SOCKET)
+	{
+		LOG (ERROR, "Error : Can't not bind socket\nError %d (%s)\n", GetLastError(), LastErrorText());
+		closesocket(sListenSocket);
+		return INVALID_SOCKET;
 	}
 
 	// create the listen queue
 	Rc = listen(sListenSocket, LISTENING_QUEUE_SIZE);
 	if (Rc == -1)
 	{
-		SVC_ERROR("Error : on listen\nError %d (%s)", GetLastError(), LastErrorText());
+		LOG (ERROR, "Error : on listen\nError %d (%s)\n", GetLastError(), LastErrorText());
 		closesocket(sListenSocket);
 		return INVALID_SOCKET;
 	}
@@ -673,7 +475,6 @@ int HTTPSendError(SOCKET skt, int HttpStatusCode)
 int LogTransfer(const struct S_ThreadData *pData, int when, int http_status)
 {
 	char szAddr[INET6_ADDRSTRLEN], szServ[NI_MAXSERV];
-	char szBuf[256];
 	int Rc;
 
 	if (sSettings.uVerbose==0)  return 0;
@@ -687,7 +488,7 @@ int LogTransfer(const struct S_ThreadData *pData, int when, int http_status)
 	if (Rc!=0) 
 	{
 		errno = Rc;
-		SVC_ERROR("getnameinfo failed.\nError %d (%s)", Rc, LastErrorText());
+		LOG (ERROR, "getnameinfo failed.\nError %d (%s)\n", Rc, LastErrorText());
                 return -1;
 	}
 	// do not use ipv4 mapped address
@@ -697,21 +498,20 @@ int LogTransfer(const struct S_ThreadData *pData, int when, int http_status)
 	switch (when)
 	{
 	    case LOG_BEGIN:
-		if (sSettings.uVerbose >= 2) 
-			puts(pData->buf);
-		StringCchPrintf(szBuf, sizeof szBuf, "From %s:%s, GET %s. burst size %d", 
+                LOG (DEBUG, "headers:\n%s", pData->buf);
+                LOG (WARN, "From %s:%s, GET %s. burst size %d\n", 
 			szAddr, szServ, pData->file_name, pData->buflen);
 		break;
 
     	    case LOG_END:
-		StringCchPrintf(szBuf, sizeof szBuf, "From %s:%s, GET %s: %" PRIu64 " bytes sent, status : %d, time spent %lus",
+                LOG (WARN, "From %s:%s, GET %s: %" PRIu64 " bytes sent, status : %d, time spent %lus\n",
 			szAddr, szServ, pData->file_name==NULL ? "unknown" : pData->file_name,
 			pData->qwFileCurrentPos, http_status, 
 			time(NULL) - pData->tStartTrf
 		);
 		break;
     	    case LOG_RESET:
-		StringCchPrintf(szBuf, sizeof szBuf, "GET %s: Reset by %s:%s, %" PRIu64 " bytes sent, status : %d, time spent %lus",
+		LOG (WARN, "GET %s: Reset by %s:%s, %" PRIu64 " bytes sent, status : %d, time spent %lus\n",
 			pData->file_name==NULL ? "unknown" : pData->file_name,  
                         szAddr, szServ, 
 			pData->qwFileCurrentPos, http_status,
@@ -719,7 +519,7 @@ int LogTransfer(const struct S_ThreadData *pData, int when, int http_status)
 		);
 		break;
 	}
-	return	puts(szBuf);
+return 0;
 } // LogTransfer
 
 
@@ -739,7 +539,7 @@ const char *GetHtmlContentType(const char *os_extension)
 	if (ark >= sizeof(sHtmlTypes) / sizeof(sHtmlTypes[0]))
 	{
 		if (sSettings.szDefaultContentType==NULL)
-		    SVC_ERROR("Unregistered file extension");
+		    LOG (WARN, "Unregistered file extension\n");
 		return sSettings.szDefaultContentType;		// NULL if not overridden
 	}
 	return (char *) sHtmlTypes[ark].filetype;
@@ -803,7 +603,7 @@ int DecodeHttpRequest(struct S_ThreadData *pData, int request_length)
 	pData->buf[request_length++] = 0;
 
 	// dump complete request
-	if (sSettings.uVerbose >= 4) puts(pData->buf);
+        LOG (DEBUG, "request:\n%s", pData->buf);
 
 	// ensure request is a GET or HEAD
 	CharUpperBuff(pData->buf, sizeof "GET " - 1);
@@ -813,32 +613,33 @@ int DecodeHttpRequest(struct S_ThreadData *pData, int request_length)
 		pData->request = HTTP_HEAD;
 	else  // reject other requests !
 	{
-		SVC_ERROR("Only Simple GET and HEAD operations supported");
+		LOG (WARN, "Only Simple GET and HEAD operations supported\n");
 		return HTTP_METHODNOTALLOWED;
 	}
 	// extract file name
 	if (!ExtractFileName(pData->buf, request_length, pData->url_filename, sizeof pData->url_filename))
 	{
-		SVC_ERROR("invalid HTTP formatting");
+		LOG (WARN, "invalid HTTP formatting\n");
 		return HTTP_BADREQUEST;
 	}
 
         // dry-run : try to open it (sanaty checks not done)
 	pData->hFile = fopen (pData->url_filename, "rb");
-        if (pData->hFile==NULL)   
+        if (pData->hFile==INVALID_FILE_VALUE)   
         {
-                SVC_ERROR("file %s not found/access denied", pData->url_filename);
+                LOG (WARN, "file %s not found/access denied\n", pData->url_filename);
                 return HTTP_NOTFOUND;
         }
         fclose (pData->hFile);
+        pData->hFile=INVALID_FILE_VALUE;
 
 	// get canonical name && locate the file name location
 	// Valid since we are in the main thread
 	if ( ! GetFullPathName(pData->url_filename, MAX_PATH, pData->long_filename, &pData->file_name) )
         {
                 if (GetLastError()==ERROR_FILE_NOT_FOUND)   
-                        SVC_ERROR("File |%s| not found", pData->url_filename);
-                else    SVC_ERROR("%s: invalid File formatting", pData->url_filename);
+                        LOG (WARN, "File |%s| not found\n", pData->url_filename);
+                else    LOG (WARN, "s: invalid File formatting\n", pData->url_filename);
 		pData->file_name = NULL;
                 return HTTP_BADREQUEST;
         }
@@ -851,11 +652,11 @@ int DecodeHttpRequest(struct S_ThreadData *pData, int request_length)
 									// sanity check : do not go backward in the directory structure
 	GetFullPathName(".", MAX_PATH, szCurDir, NULL);
 #ifdef UNSAFE__DEBUG
-	printf("file to be retreived is %s, path is %s, file is %s, cur dir is %s\n", pData->long_filename, pData->buf, pData->file_name, szCurDir);
+	LOG(TRACE, "file to be retreived is %s, path is %s, file is %s, cur dir is %s\n", pData->long_filename, pData->buf, pData->file_name, szCurDir);
 #endif
 	if (memcmp(szCurDir, pData->long_filename, strlen(szCurDir)) != 0)
 	{
-		SVC_ERROR("directory traversal detected");
+		LOG (WARN, "directory traversal detected\n");
 		return HTTP_SECURITYVIOLATION;
 	}
 	return HTTP_OK;
@@ -879,7 +680,7 @@ THREAD_RET WINAPI HttpTransferThread(void * lpParam)
 	bytes_rcvd = recv(pData->skt, pData->buf, pData->buflen - 1, 0);
 	if (bytes_rcvd < 0)
 	{
-		SVC_ERROR("Error in recv\nError %d (%s)", GetLastError(), LastErrorText());
+		LOG (ERROR, "Error in recv\nError %d (%s)\n", GetLastError(), LastErrorText());
 		goto cleanup;
 	}
 	// modify buffer size depending on MSS
@@ -888,7 +689,8 @@ THREAD_RET WINAPI HttpTransferThread(void * lpParam)
 		pData->buflen = DEFAULT_BURST_PKTS * tcp_mss;
                 pData->buf = realloc (pData->buf, pData->buflen);
                 if (pData->buf==NULL)
-                { SVC_ERROR("can not allocate memory\n"); exit(3); }
+                { LOG (FATAL, "can not allocate memory\n"); 
+                  exit(3); }
         }
                
 
@@ -904,11 +706,13 @@ THREAD_RET WINAPI HttpTransferThread(void * lpParam)
 		iHttpStatus = HTTP_TYPENOTSUPPORTED;
 		goto cleanup;
 	}
+
 	// open file in binary mode (file length and bytes sent will match)
 	pData->hFile = fopen (pData->long_filename, "rb");
-	if (pData->hFile == NULL)
+	if (pData->hFile == INVALID_FILE_VALUE)
 	{
-		SVC_ERROR("Error opening file %s\nError %d (%s)", pData->long_filename, GetLastError(), LastErrorText());
+		LOG (ERROR, "Error opening file %s\nError %d (%s)\n", 
+                             pData->long_filename, GetLastError(), LastErrorText());
 		iHttpStatus = HTTP_NOTFOUND;
 		goto cleanup;
 	}
@@ -942,15 +746,14 @@ THREAD_RET WINAPI HttpTransferThread(void * lpParam)
 				LogTransfer(pData, LOG_RESET, HTTP_PARTIAL);
 				break;
 			}
-			if (sSettings.uVerbose > 4)
-				printf("read %d bytes from %s\n", bytes_read, pData->long_filename);
+			LOG(TRACE, "read %d bytes from %s\n", bytes_read, pData->long_filename);
 
 			if (sSettings.slow_down) ssleep(sSettings.slow_down);
 		} while (bytes_read > 0);
 
 		if (bytes_read == 0 && !feof(pData->hFile))	//note: if transfer cancelled report OK anyway
 		{
-			SVC_ERROR("Error in ReadFile\nError %d (%s)", GetLastError(), LastErrorText());
+			LOG (ERROR, "Error in ReadFile\nError %d (%s)\n", GetLastError(), LastErrorText());
 			iHttpStatus = HTTP_SERVERERROR;
 			goto cleanup;
 		}
@@ -1018,8 +821,9 @@ int ManageTerminatedThreads (void)
 			pCur->ThStatus = THREAD_STATE_DOWN;
 
 			// free resources (if not done before)
-			if (pCur->buf!=NULL)    free (pCur->buf), pCur->buf=NULL;;
-			if (pCur->hFile!=NULL)  fclose (pCur->hFile), pCur->hFile=NULL;;
+			if (pCur->buf!=NULL)    free (pCur->buf), pCur->buf=NULL;
+			if (pCur->hFile!=INVALID_FILE_VALUE)  
+                                              fclose (pCur->hFile), pCur->hFile=INVALID_FILE_VALUE;
 			CloseHandle (pCur->ThreadId);
 			ark++;
 
@@ -1045,8 +849,7 @@ THREAD_ID StartHttpThread (SOCKET ClientSocket, const SOCKADDR_STORAGE *sa)
 	// resources available ? 
 	if (nbThreads >= sSettings.max_threads)
 	{
-		if (sSettings.uVerbose)
-			puts("ignore request : too many simultaneous transfers\n");
+		LOG (WARN, "request rejected: too many simultaneous transfers\n");
                 return INVALID_THREAD_VALUE;
 	}
 	else
@@ -1055,7 +858,10 @@ THREAD_ID StartHttpThread (SOCKET ClientSocket, const SOCKADDR_STORAGE *sa)
 		// create a new ThreadData structure and populate it
 		pCur = (struct S_ThreadData *) calloc (1, sizeof *pCur);
 		if (pCur == NULL)
-			SVC_ERROR("can not allocate memory");
+                {
+			LOG (FATAL, "can not allocate memory\n");
+                        exit(2);
+                }
 
 		// populate record
 		pCur->ThStatus = THREAD_STATE_INIT ; // thread pregnancy
@@ -1065,10 +871,11 @@ THREAD_ID StartHttpThread (SOCKET ClientSocket, const SOCKADDR_STORAGE *sa)
 		pCur->skt = ClientSocket;
 		pCur->qwFileCurrentPos = 0;
 		time(& pCur->tStartTrf);
+                pCur->hFile = INVALID_FILE_VALUE;
 
 		if (pCur->buf == NULL)
                 {
-			SVC_ERROR("can not allocate memory");
+			LOG (FATAL, "can not allocate memory\n");
                         exit(2);
                 }
 
@@ -1076,7 +883,7 @@ THREAD_ID StartHttpThread (SOCKET ClientSocket, const SOCKADDR_STORAGE *sa)
 		pCur->ThreadId = _startnewthread (HttpTransferThread, (void *) pCur);
 		if (pCur->ThreadId == INVALID_THREAD_VALUE)
 		{
-			SVC_ERROR("can not allocate thread");
+			LOG (ERROR, "can not allocate thread\n");
 			free (pCur->buf);
 			free (pCur);
 		}
@@ -1122,7 +929,7 @@ void doLoop(SOCKET ListenSocket)
         while (Rc==0);  // 0 is timeout
 
 	if (Rc == INVALID_SOCKET) {
-		SVC_ERROR("Error : Select failed\nError %d (%s)", GetLastError(), LastErrorText());
+		LOG (FATAL, "Error : Select failed\nError %d (%s)\n", GetLastError(), LastErrorText());
 		closesocket(ListenSocket);
 		WSACleanup();
 		exit(1);
@@ -1133,7 +940,7 @@ void doLoop(SOCKET ListenSocket)
 	memset(&sa, 0, sizeof sa);
 	ClientSocket = accept(ListenSocket, (struct sockaddr *) & sa, &sa_len);
 	if (ClientSocket == INVALID_SOCKET) {
-		SVC_ERROR("Error : Accept failed\nError %d (%s)", GetLastError(), LastErrorText());
+		LOG (FATAL, "Error : Accept failed\nError %d (%s)\n", GetLastError(), LastErrorText());
 		closesocket(ListenSocket);
 		WSACleanup();
 		exit(1);
@@ -1178,31 +985,35 @@ int ParseCmdLine(int argc, char *argv[])
 				  break;
 			case 'd': if (!SetCurrentDirectory(argv[++ark]))
 				  {
-					SVC_ERROR("can not change directory to %s\nError %d (%s)",
-					argv[ark], GetLastError(), LastErrorText());
+					LOG (FATAL, "can not change directory to %s\nError %d (%s)\n",
+					             argv[ark], GetLastError(), LastErrorText());
 					exit(1);
 				 }
 				break;
 			case 'g': sSettings.slow_down   = atoi(argv[++ark]);   break;
 			case 'i': sSettings.szBoundTo   = argv[++ark];         break;
 			case 'p': sSettings.szPort      = argv[++ark];         break;
+			case 'q': sSettings.uVerbose--;                        break;
 			case 's': sSettings.max_threads = atoi(argv[++ark]);   break;
 			case 'v': for (idx=1;  argv[ark][idx]=='v' ; idx++) 
                                        sSettings.uVerbose++;      
                                   break;
-			case 'V': printf ("uweb version %s\n", UWEB_VERSION);
+			case 'V': sSettings.uVerbose = INFO;
+                                  LOG (INFO, "uweb version %s\n", UWEB_VERSION);
                                   exit(0);
 			case 'x': sSettings.szDefaultHtmlFile = argv[++ark];   break;
 				break;
 			default:
-				puts(SYNTAX);
-				exit(1);
+                                 sSettings.uVerbose = INFO;
+				 LOG (INFO, SYNTAX);
+				 exit(1);
 
 			} // switch
 		} // args prefixed by "-"
 		else
 		{
-			puts(SYNTAX);
+                        sSettings.uVerbose = INFO;
+                        LOG (INFO, SYNTAX);
 			exit(1);
 		}
 	} // for all args
@@ -1225,8 +1036,7 @@ int main(int argc, char *argv[])
 		exit(1);
 
 	GetCurrentDirectory(sizeof sbuf, sbuf);
-	// if (sSettings.uVerbose)
-	printf("uweb is listening on port %s, base directory is %s\n", 	sSettings.szPort, sbuf);
+	LOG (WARN, "uweb is listening on port %s, base directory is %s\n", 	sSettings.szPort, sbuf);
 
 	for (  ;  GO_ON ; )
 	{
