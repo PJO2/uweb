@@ -9,48 +9,6 @@
 // ---------------------------------------------------------
 
 
-// Changes:
-// from 1.3
-//  - add reuse port and reuse address socket option
-//  - add HEAD request processing
-//  - display the incoming request with the -vv option
-//  - change buffer size to 5 x MSS
-// from 1.4
-// - display time spent after a tranfer
-// from 1.5
-// - file not found: earlier detection
-// - add mentions of -ct and -cb in unspported media type report
-// - header Server change from mweb to uweb
-// - add option -V to display version
-// from 1.6
-// - encapsulate all terminal outputs into function log
-// - change default log level to WARN (and add -quiet option)
-// - data and structures sent to h files
-// - Windows release compiled with Pelles C
-// - set hFile pointer to INVALID_FILE_VALUE after dry run opening
-
-
-#define UWEB_VERSION "1.7"
-
-const char SYNTAX[] = ""
-"uweb: Usage\n"
-"\n uweb   [-4|-6] [-p port] [-d dir] [-i addr] [-c content-type|-ct|-cb]"
-"\n        [-g msec] [-s max connections] [-verbose] [-quiet] [-x file]\n"
-"\n      -4   IPv4 only"
-"\n      -6   IPv6 only"
-"\n      -c   content-type assigned to unknown files"
-"\n           (default: reject unregistered types)"
-"\n           [-ct: default text/plain], [-cb: default application/octet-stream]"
-"\n      -d   base directory for content (default is current directory)"
-"\n      -g   slow down transfer by waiting for x msc between two frames"
-"\n      -i   listen only this address"
-"\n      -p   HTTP port (defaut is 8080)"
-"\n      -q   quiet (decrease log level)"
-"\n      -s   maximum simultaneous connections (default is 1024)"
-"\n      -v   verbose (can be used up to 5 times)"
-"\n      -V   display version and exit"
-"\n      -x   set the default page for a directory (default is index.html)"
-"\n";
 
 #define _CRT_SECURE_NO_WARNINGS	1
 #define _CRT_SECURE_NO_DEPRECATE
@@ -147,8 +105,6 @@ void ssleep (int msec)                 { Sleep (msec); }
 typedef int            BOOL;
 typedef uint64_t       DWORD64;
 
-enum { FALSE=0, TRUE };
-
 // ---      system library
 int GetLastError(void)     { return errno; }
 #define ERROR_FILE_NOT_FOUND ENOENT
@@ -230,6 +186,75 @@ int CloseHandle (THREAD_ID ThId)             { return 0; }
 #include "log.h"
 #include "uweb.h"
 #include "html_extensions.h"
+
+  // ---------------------------------------------------------
+  // Protocol Error codes and text
+  // ---------------------------------------------------------
+// managed status code
+enum     { HTTP_OK=200,
+           HTTP_PARTIAL=206,
+           HTTP_BADREQUEST=400,
+           HTTP_SECURITYVIOLATION=403,
+           HTTP_NOTFOUND=404,
+           HTTP_METHODNOTALLOWED=405,
+           HTTP_TYPENOTSUPPORTED=415,
+           HTTP_SERVERERROR=500 };
+
+// requests processed by uweb
+enum {    HTTP_GET = 1,
+              HTTP_HEAD,  };
+
+// Reporting
+struct S_ErrorCodes
+{
+        int         status_code;
+        const char *txt_content;
+        const char *html_content;
+}
+sErrorCodes[] =
+{
+    { HTTP_BADREQUEST,        "Bad Request",            "HTTP malformed request syntax.",  },
+    { HTTP_NOTFOUND,          "Not Found",              "The requested URL was not found on this server.",  },
+    { HTTP_SECURITYVIOLATION, "Forbidden",              "Directory traversal attack detected.",             },
+    { HTTP_TYPENOTSUPPORTED,  "Unsupported Media Type", "The requested file type is not allowed on this static file webserver.<br>\
+                                                         Options -ct or -cb will override this control.", },
+    { HTTP_METHODNOTALLOWED,  "Method Not Allowed",     "The requested file operation is not allowed on this static file webserver.", },
+    { HTTP_SERVERERROR,       "Internal Server Error",  "Internal Server Error, can not access to file anymore.", },
+};
+// HTML and HTTP message return on Error
+const char szHTMLErrFmt[]  = "<html><head>\n<title>%d %s</title>\n</head><body>\n<h1>%s</h1>\n%s\n</body></html>\n";
+const char szHTTPDataFmt[] = "HTTP/1.1 %d %s\nServer: uweb-%s\nContent-Length: %" PRIu64 "\nConnection: close\nContent-Type: %s\n\n";
+
+
+  // ---------------------------------------------------------
+  // Operationnal states : settings, HTML types  and thread data
+  // ---------------------------------------------------------
+
+typedef enum e_THREADSTATUS    THREADSTATUS ;
+enum e_THREADSTATUS { THREAD_STATE_INIT, THREAD_STATE_RUNNING, THREAD_STATE_EXITING, THREAD_STATE_DOWN };
+
+// The structure for each transfer
+struct S_ThreadData
+{
+        int         request;    // GET or HEAD
+        SOCKET      skt;                        // the transfer skt
+        SOCKADDR_STORAGE sa;            // keep track of the client
+        char       *buf;                        // buffer for communication allocated in main thread
+        unsigned    buflen;                     // sizeof this buffer
+        char        url_filename[MAX_PATH];     // URL to be retrieved
+        char        long_filename[MAX_PATH];    // canonical file name with path
+        char       *file_name;                  // pointer inside long_filename
+        char       *file_type;                  // pointer inside long_filename
+        FILE       *hFile;                      // file handle
+        DWORD64     qwFileCurrentPos;           // pos in file (also the number of bytes sent to the client)
+        DWORD64     qwFileSize;                 // total size of the file
+        time_t      tStartTrf;                  // when the transfer has started
+
+        THREAD_ID   ThreadId;                  // thread data (posix) or Id (Windows)
+        THREADSTATUS ThStatus;                  // thread status
+        struct S_ThreadData *next;
+};
+
 
 
 // Thread database
@@ -899,10 +924,15 @@ THREAD_ID StartHttpThread (SOCKET ClientSocket, const SOCKADDR_STORAGE *sa)
 return pCur->ThreadId;
 } // StartHttpThread
 
+
+
 // -------------------
 // main loop 
 // -------------------
-void doLoop(SOCKET ListenSocket)
+
+static SOCKET ListenSocket;
+
+void doLoop (void)
 {
 	SOCKADDR_STORAGE sa;
 	socklen_t        sa_len;
@@ -955,99 +985,37 @@ void doLoop(SOCKET ListenSocket)
 } // doLoop
 
 
-
 // -------------------
-// inits 
+// Setup and Cleanup
 // -------------------
-
-  // process args (mostly populate settings structure)
-  // loosely processed : user can crash with invalid args...
-int ParseCmdLine(int argc, char *argv[])
+BOOL Setup (void)
 {
-	int ark, idx;
-	const char *p; 
-
-	for (ark = 1; ark < argc; ark++)
-	{
-		if (argv[ark][0] == '-')
-		{
-			switch (argv[ark][1])
-			{
-			case '4': sSettings.bIPv6 = FALSE; break;
-			case '6': sSettings.bIPv4 = FALSE; break;
-			case 'c': switch (argv[ark][2])
-				  {
-					case 'b' : p = DEFAULT_BINARY_TYPE; break;
-					case 't' : p = DEFAULT_TEXT_TYPE;   break;
-					default  : p = argv[++ark]; 
-			          }
-				  sSettings.szDefaultContentType = p;
-				  break;
-			case 'd': if (!SetCurrentDirectory(argv[++ark]))
-				  {
-					LOG (FATAL, "can not change directory to %s\nError %d (%s)\n",
-					             argv[ark], GetLastError(), LastErrorText());
-					exit(1);
-				 }
-				break;
-			case 'g': sSettings.slow_down   = atoi(argv[++ark]);   break;
-			case 'i': sSettings.szBoundTo   = argv[++ark];         break;
-			case 'p': sSettings.szPort      = argv[++ark];         break;
-			case 'q': sSettings.uVerbose--;                        break;
-			case 's': sSettings.max_threads = atoi(argv[++ark]);   break;
-			case 'v': for (idx=1;  argv[ark][idx]=='v' ; idx++) 
-                                       sSettings.uVerbose++;      
-                                  break;
-			case 'V': sSettings.uVerbose = INFO;
-                                  LOG (INFO, "uweb version %s\n", UWEB_VERSION);
-                                  exit(0);
-			case 'x': sSettings.szDefaultHtmlFile = argv[++ark];   break;
-				break;
-			default:
-                                 sSettings.uVerbose = INFO;
-				 LOG (INFO, SYNTAX);
-				 exit(1);
-
-			} // switch
-		} // args prefixed by "-"
-		else
-		{
-                        sSettings.uVerbose = INFO;
-                        LOG (INFO, SYNTAX);
-			exit(1);
-		}
-	} // for all args
-	return ark;
-} // ParseCmdLine
+char sbuf[MAX_PATH];
 
 
+        InitSocket();
+        ListenSocket = BindServiceSocket (sSettings.szPort, sSettings.szBoundTo);
+        if (ListenSocket == INVALID_SOCKET)
+             return FALSE;
 
-  // main program : read args, create listening socket and wait for incoming connections
-int main(int argc, char *argv[])
+	if (!SetCurrentDirectory (sSettings.szDirectory))
+        {
+               LOG (FATAL, "can not change directory to %s\nError %d (%s)\n",
+                           sSettings.szDirectory,
+                           GetLastError(), LastErrorText());
+               return FALSE;
+        }
+        GetCurrentDirectory(sizeof sbuf, sbuf);
+        LOG (WARN, "uweb is listening on port %s, base directory is %s\n",      sSettings.szPort, sbuf);
+
+        return TRUE;
+} // Setup 
+
+
+void Cleaup (void)
 {
-	SOCKET ListenSocket;
-	char sbuf[MAX_PATH];
-
-	ParseCmdLine(argc, argv); // override default settings
-							  // Prepare the socket
-	InitSocket();
-	ListenSocket = BindServiceSocket (sSettings.szPort, sSettings.szBoundTo);
-	if (ListenSocket == INVALID_SOCKET)
-		exit(1);
-
-	GetCurrentDirectory(sizeof sbuf, sbuf);
-	LOG (WARN, "uweb is listening on port %s, base directory is %s\n", 	sSettings.szPort, sbuf);
-
-	for (  ;  GO_ON ; )
-	{
-		doLoop(ListenSocket);
-	} // for (; ; )
-	  // cleanup
-
-	ManageTerminatedThreads (); // free terminated threads resources
-	closesocket(ListenSocket);
-	WSACleanup();
-
-	return 0;
+       ManageTerminatedThreads (); // free terminated threads resources
+       closesocket(ListenSocket);
+       WSACleanup();
 }
 
