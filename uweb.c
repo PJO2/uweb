@@ -19,6 +19,7 @@
 #include <time.h>
 #include <string.h>
 #include <assert.h>
+#include <errno.h>
 
 // avoid warning "variable set but unused"
 #define __DUMMY(x) ( (void) (x) )
@@ -230,8 +231,8 @@ const char szHTTPDataFmt[] = "HTTP/1.1 %d %s\nServer: uweb-%s\nContent-Length: %
   // Operationnal states : settings, HTML types  and thread data
   // ---------------------------------------------------------
 
-typedef enum e_THREADSTATUS    THREADSTATUS ;
 enum e_THREADSTATUS { THREAD_STATE_INIT, THREAD_STATE_RUNNING, THREAD_STATE_EXITING, THREAD_STATE_DOWN };
+typedef enum e_THREADSTATUS    THREADSTATUS ;
 
 // The structure for each transfer
 struct S_ThreadData
@@ -580,7 +581,7 @@ BOOL ExtractFileName(const char *szHttpRequest, int request_length, char *szFile
 	int         len, url_length;
 
 	// check that string is nul terminated (ok already done in caller)
-	if (strnlen(szHttpRequest, request_length) == request_length)
+	if (strnlen_s(szHttpRequest, request_length) == request_length)
 		return FALSE;
 
 	// check that request is long enough to find the file name

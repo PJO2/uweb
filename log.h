@@ -8,6 +8,7 @@
 // ---------------------------------------------------------
 
 
+#undef ERROR
 // LOG levels
 enum { FATAL=-1, ERROR, WARN, INFO, DEBUG, TRACE, ALL };
 

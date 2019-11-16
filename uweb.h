@@ -10,9 +10,12 @@
 
 #define UWEB_VERSION "1.7"
 
-enum { FALSE=0, TRUE };
+#ifndef FALSE
+#  define FALSE (0==1)
+#  define TRUE  (1==1)
+#endif
 
-
+typedef int BOOL;
 // ---------------------------------------------------------
 // default parameters
 // ---------------------------------------------------------
