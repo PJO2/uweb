@@ -45,6 +45,7 @@
 #define vsnprintf _vsnprintf 
 #define strcasecmp _stricmp 
 #define strncasecmp _strnicmp 
+#define strnlen     strnlen_s
 
 // print 64 bytes unsigned (for files > 4Gb)
 #define _FILE_OFFSET_BITS 64
@@ -581,7 +582,7 @@ BOOL ExtractFileName(const char *szHttpRequest, int request_length, char *szFile
 	int         len, url_length;
 
 	// check that string is nul terminated (ok already done in caller)
-	if (strnlen_s(szHttpRequest, request_length) == request_length)
+	if (strnlen(szHttpRequest, request_length) == request_length)
 		return FALSE;
 
 	// check that request is long enough to find the file name
