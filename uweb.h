@@ -8,7 +8,7 @@
 // --------------------------------------------------------
 
 
-#define UWEB_VERSION "1.7"
+#define UWEB_VERSION "1.8"
 
 #ifndef FALSE
 #  define FALSE (0==1)
@@ -39,7 +39,10 @@ typedef int BOOL;
 // uweb Settings
 struct S_Settings
 {
+	// roughly used by log.c 
         int   uVerbose;
+        int   timestamp;
+        // order does not matter now
         BOOL  bIPv4;
         BOOL  bIPv6;
         char  *szPort;

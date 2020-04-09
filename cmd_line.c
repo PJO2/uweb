@@ -28,6 +28,9 @@
 // - data and structures sent to h files
 // - Windows release compiled with Pelles C
 // - set hFile pointer to INVALID_FILE_VALUE after dry run opening
+// from 1.7
+// - add timestamp into log (option -t)
+// - improve handling of -c (-cn did not trigger an error, instead it skipped next param)
 
 
 const char SYNTAX[] = ""
@@ -67,7 +70,7 @@ typedef int            BOOL;
 #include "uweb.h"
 #include "log.h"
 
-struct S_Settings sSettings = { WARN, FALSE, FALSE, DEFAULT_PORT, NULL, ".", DEFAULT_HTMLFILE, NULL, DEFAULT_MAXTHREADS, FALSE };
+struct S_Settings sSettings = { WARN, FALSE, FALSE, FALSE, DEFAULT_PORT, NULL, ".", DEFAULT_HTMLFILE, NULL, DEFAULT_MAXTHREADS, FALSE };
 
 
 
@@ -75,12 +78,21 @@ struct S_Settings sSettings = { WARN, FALSE, FALSE, DEFAULT_PORT, NULL, ".", DEF
 // inits 
 // -------------------
 
+void BAD_PARAMS()
+{
+    sSettings.uVerbose = INFO;  // ensure message is dispayed
+    LOG (INFO, SYNTAX);
+    exit(1);
+
+} // BAD_PARAMS
+
   // process args (mostly populate settings structure)
   // loosely processed : user can crash with invalid args...
 int ParseCmdLine(int argc, char *argv[])
 {
 	int ark, idx;
 	const char *p; 
+	char type_p=' ' ; // character which determine the default type binary/text
 
 	for (ark = 1; ark < argc; ark++)
 	{
@@ -90,11 +102,13 @@ int ParseCmdLine(int argc, char *argv[])
 			{
 			case '4': sSettings.bIPv6 = FALSE; break;
 			case '6': sSettings.bIPv4 = FALSE; break;
-			case 'c': switch (argv[ark][2])
+			case 'c': if (argv[ark][2]!=0)         type_p = argv[ark][2];
+                                  else  if (argv[ark+1]!=NULL) type_p = argv[++ark][0];
+                                  switch (type_p | 0x20)
 				  {
 					case 'b' : p = DEFAULT_BINARY_TYPE; break;
 					case 't' : p = DEFAULT_TEXT_TYPE;   break;
-					default  : p = argv[++ark]; 
+					default  : BAD_PARAMS();
 			          }
 				  sSettings.szDefaultContentType = p;
 				  break;
@@ -107,23 +121,19 @@ int ParseCmdLine(int argc, char *argv[])
 			case 'v': for (idx=1;  argv[ark][idx]=='v' ; idx++) 
                                        sSettings.uVerbose++;      
                                   break;
+			case 't' : sSettings.timestamp = TRUE;                 break;
 			case 'V': sSettings.uVerbose = INFO;
                                   LOG (INFO, "uweb version %s\n", UWEB_VERSION);
                                   exit(0);
 			case 'x': sSettings.szDefaultHtmlFile = argv[++ark];   break;
 				  break;
-			default:
-                                 sSettings.uVerbose = INFO;
-				 LOG (INFO, SYNTAX);
-				 exit(1);
+			default:  BAD_PARAMS();
 
 			} // switch
 		} // args prefixed by "-"
 		else
 		{
-                        sSettings.uVerbose = INFO;
-                        LOG (INFO, SYNTAX);
-			exit(1);
+			BAD_PARAMS();
 		}
 	} // for all args
 	return ark;
