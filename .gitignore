@@ -2,6 +2,8 @@
 # This .gitignore file was automatically created by Microsoft(R) Visual Studio.
 ################################################################################
 
+uweb
+printf.c
 /.vs
 /Debug
 /Release

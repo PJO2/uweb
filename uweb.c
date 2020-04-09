@@ -525,9 +525,9 @@ int LogTransfer(const struct S_ThreadData *pData, int when, int http_status)
 	switch (when)
 	{
 	    case LOG_BEGIN:
-                LOG (DEBUG, "headers:\n%s", pData->buf);
-                LOG (WARN, "From %s:%s, GET %s. burst size %d\n", 
-			szAddr, szServ, pData->file_name, pData->buflen);
+                LOG (DEBUG, "uweb answers with headers:\n--->>\n%s--->>\n", pData->buf);
+                LOG (WARN, "From %s:%s, GET %s, MSS is %u, burst size %d\n", 
+			szAddr, szServ, pData->file_name, GetSocketMSS(pData->skt), pData->buflen);
 		break;
 
     	    case LOG_END:
@@ -630,7 +630,7 @@ int DecodeHttpRequest(struct S_ThreadData *pData, int request_length)
 	pData->buf[request_length++] = 0;
 
 	// dump complete request
-        LOG (DEBUG, "request:\n%s", pData->buf);
+        LOG (DEBUG, "client request:\n<<---\n%s<<---\n", pData->buf);
 
 	// ensure request is a GET or HEAD
 	CharUpperBuff(pData->buf, sizeof "GET " - 1);

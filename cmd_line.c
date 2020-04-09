@@ -31,6 +31,8 @@
 // from 1.7
 // - add timestamp into log (option -t)
 // - improve handling of -c (-cn did not trigger an error, instead it skipped next param)
+// - display MSS in debug mode
+// - change display for headers/request in debug mode
 
 
 const char SYNTAX[] = ""
