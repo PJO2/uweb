@@ -3,9 +3,7 @@ wget -O WinBinaries/uweb32.exe http://192.168.2.12:8080/Release/uweb.exe
 wget -O WinBinaries/uweb64.exe http://192.168.2.12:8080/x64/Release/uweb.exe
 
 # compute checksums
-cd WinBinaries
-md5sum u*exe  > MD5SUMS
-sha1sum u*exe > SHA1SUMS
+cd WindowsBinaries && md5sum u*exe  > MD5SUMS && sha1sum u*exe > SHA1SUMS && cd ..
 
 # prepare next shipping
 cd ..
