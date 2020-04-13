@@ -47,6 +47,8 @@ Even easier : get the binaries and run !
     > git clone https://github.com/PJO2/uweb
     > uweb\WindowsBinaries\uweb32.exe -v -d uweb -x hello.html
 
+    The Pelles C makefile is included in order to create the binaries
+
 ### test it
 from a local web browser open this URL : http://127.0.0.1:8080/
 
