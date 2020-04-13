@@ -11,3 +11,4 @@ printf.c
 /Win32/Release
 *.pdb
 /Win32/Debug
+/output

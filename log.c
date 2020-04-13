@@ -17,7 +17,7 @@
 // from uweb.h
 extern struct S_Settings
 {
-        int   uVerbose;
+	int   uVerbose;
 	int   timestamp;
 } sSettings;
 
