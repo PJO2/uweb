@@ -1,5 +1,6 @@
 // --------------------------------------------------------
-// uweb : a minimal web server which compile under MacOS, Linux and Windows
+// uweb : a minimal web server which compile under 
+//        MacOS, Linux and Windows
 // by Ph. Jounin November 2019
 // 
 // License: GPLv2
