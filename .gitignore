@@ -4,12 +4,8 @@
 
 uweb
 uweb.exe
-printf.c
+uweb.ppx
+uweb.tag
 /.vs
-/Debug
-/Release
-/x64
-/Win32/Release
 *.pdb
-/Win32/Debug
 /output

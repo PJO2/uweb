@@ -601,10 +601,10 @@ BOOL ExtractFileName(const char *szHttpRequest, int request_length, char *szFile
 	// file name is supposed to start with '/', anyway accepts if / is missing
 	for (; *pCur == '/'; pCur++);  // skip  /
 
-	// go to end of line
+	// go to next work or '?' or end of line (missing HTTP version)
 	pEnd = strpbrk(pCur, "\r\n ?");
 	// add: check that pEnd is not NULL !
-	if (pEnd==NULL || *pEnd != ' ' && *pEnd != '?')		// if anormal endings
+	if ( pEnd==NULL || (*pEnd != ' ' && *pEnd != '?') )		// if anormal endings
 	{
 		return FALSE;
 	}
