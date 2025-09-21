@@ -3,7 +3,6 @@
 cd WindowsBinaries && md5sum u*exe  > MD5SUMS && sha1sum u*exe > SHA1SUMS && cd ..
 
 # prepare next shipping
-cd ..
 git add WindowsBinaries/*
 git commit -m "update windows binaries"
 
