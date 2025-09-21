@@ -1,6 +1,6 @@
 // --------------------------------------------------------
 // uweb : a minimal web server which compile under MacOS, Linux and Windows
-// by Ph. Jounin November 2019
+// by Ph. Jounin November 2019 - 2025
 // 
 // License: GPLv2
 // Sources : 
@@ -33,6 +33,8 @@
 // - improve handling of -c (-cn did not trigger an error, instead it skipped next param)
 // - display MSS in debug mode
 // - change display for headers/request in debug mode
+// from 1.8
+// add a check after strpbrk that EoL has been found
 
 
 const char SYNTAX[] = ""

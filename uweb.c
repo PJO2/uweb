@@ -7,6 +7,10 @@
 // Sources : 
 //              - nweb23.c from IBM and Nigel Griffiths
 //              - mweb.cpp from Ph. Jounin
+// Pelles C compilation :  
+//				Project properties, choose target architecture
+//              -Tx86-coff, -machine:x64, LIB C:\Program Files\PellesC\Lib\Win 
+//              -Tx64-coff, -machine:x64, LIB C:\Program Files\PellesC\Lib\Win64
 // ---------------------------------------------------------
 
 
@@ -599,7 +603,8 @@ BOOL ExtractFileName(const char *szHttpRequest, int request_length, char *szFile
 
 	// go to end of line
 	pEnd = strpbrk(pCur, "\r\n ?");
-	if (*pEnd != ' ' && *pEnd != '?')		// if anormal endings
+	// add: check that pEnd is not NULL !
+	if (pEnd==NULL || *pEnd != ' ' && *pEnd != '?')		// if anormal endings
 	{
 		return FALSE;
 	}
