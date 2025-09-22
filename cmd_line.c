@@ -95,7 +95,7 @@ void BAD_PARAMS()
 int ParseCmdLine(int argc, char *argv[])
 {
 	int ark, idx;
-	const char *p; 
+	const char *p=NULL; 
 	char type_p=' ' ; // character which determine the default type binary/text
 
 	for (ark = 1; ark < argc; ark++)

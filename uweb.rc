@@ -1,0 +1,31 @@
+#include <winres.h>
+
+1 VERSIONINFO
+ FILEVERSION 1,8,0,0
+ PRODUCTVERSION 1,8,0,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS 0x40004L     // VOS_NT_WINDOWS32
+ FILETYPE 0x1L       // VFT_APP
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"    // US English, Unicode
+        BEGIN
+            VALUE "CompanyName",      "#f8000.net\0"
+            VALUE "FileDescription",  "uweb lightweight http server\0"
+            VALUE "FileVersion",      "1.8.0\0"
+            VALUE "InternalName",     "uweb.exe\0"
+            VALUE "OriginalFilename", "uweb.exe\0"
+            VALUE "ProductName",      "uweb\0"
+            VALUE "ProductVersion",   "1.8.0\0"
+            VALUE "LegalCopyright",   "© 2025 Ph. Jounin\0"
+        END
+    END
+
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

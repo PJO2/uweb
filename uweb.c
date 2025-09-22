@@ -1,7 +1,7 @@
 // --------------------------------------------------------
 // uweb : a minimal web server which compile under 
 //        MacOS, Linux and Windows
-// by Ph. Jounin November 2019
+// by Ph. Jounin November 2019-2025
 // 
 // License: GPLv2
 // Sources : 
@@ -372,13 +372,13 @@ int dump_addrinfo(ADDRINFO *runp)
 	int e;
 
         LOG (INFO, "family: %d, socktype: %d, protocol: %d, ", runp->ai_family, runp->ai_socktype, runp->ai_protocol);
-	e = getnameinfo(
-			runp->ai_addr, runp->ai_addrlen,
-			hostbuf, sizeof(hostbuf),
-			portbuf, sizeof(portbuf),
-			NI_NUMERICHOST | NI_NUMERICSERV
-	);
-	LOG (WARN, "host: %s, port: %s\n", hostbuf, portbuf);
+		e = getnameinfo(
+				runp->ai_addr, runp->ai_addrlen,
+				hostbuf, sizeof(hostbuf),
+				portbuf, sizeof(portbuf),
+				NI_NUMERICHOST | NI_NUMERICSERV
+		);
+		LOG (WARN, "host: %s, port: %s\n", hostbuf, portbuf);
        __DUMMY(e);
 return 0;
 }
@@ -443,7 +443,7 @@ SOCKET BindServiceSocket(const char *port, const char *sz_bind_addr)
 	}
 
 	// bind the socket to the active interface
-	Rc = bind(sListenSocket, cur->ai_addr, cur->ai_addrlen);
+	Rc = bind(sListenSocket, cur->ai_addr, (int) cur->ai_addrlen);
 	if (Rc == INVALID_SOCKET)
 	{
 		LOG (ERROR, "Error : Can't not bind socket\nError %d (%s)\n", GetLastError(), LastErrorText());
@@ -497,8 +497,8 @@ int HTTPSendError(SOCKET skt, int HttpStatusCode)
                 	UWEB_VERSION,
                 	(DWORD64) strlen (szContentBuf),
                 	"text/html" );
-        iResult = send (skt, szHTTPHeaders, strlen (szHTTPHeaders), 0);
-        iResult = send (skt, szContentBuf,  strlen (szContentBuf),  0);
+        iResult = send (skt, szHTTPHeaders, (int) strlen (szHTTPHeaders), 0);
+        iResult = send (skt, szContentBuf,  (int) strlen (szContentBuf),  0);
         return iResult;
 } // HTTPSendError
 
@@ -581,10 +581,10 @@ const char *GetHtmlContentType(const char *os_extension)
   // extract the file name 
   //			1- do not crash if we receive misformatted packets
   // HTTP formatting is GET _space_ file name ? arguments _space_ HTTP/VERSION _end of line_
-BOOL ExtractFileName(const char *szHttpRequest, int request_length, char *szFileName, int name_size)
+BOOL ExtractFileName(const char *szHttpRequest, size_t request_length, char *szFileName, size_t name_size)
 {
 	const char *pCur=NULL, *pEnd;
-	int         len, url_length;
+	size_t      len, url_length;
 
 	// check that string is nul terminated (ok already done in caller)
 	if (strnlen(szHttpRequest, request_length) == request_length)
@@ -626,12 +626,12 @@ BOOL ExtractFileName(const char *szHttpRequest, int request_length, char *szFile
 
   // Read request and extract file name
   // if error, can return abruptely: resources freed in calling funtions
-int DecodeHttpRequest(struct S_ThreadData *pData, int request_length)
+int DecodeHttpRequest(struct S_ThreadData *pData, size_t request_length)
 {
 	char     szCurDir[MAX_PATH];
 
 	// double check buffer overflow
-	if (request_length >= (int)pData->buflen)
+	if (request_length >= pData->buflen)
 		exit(-2);
 	pData->buf[request_length++] = 0;
 
@@ -700,8 +700,8 @@ int DecodeHttpRequest(struct S_ThreadData *pData, int request_length)
 // Thread base
 THREAD_RET WINAPI HttpTransferThread(void * lpParam)
 {
-	int      bytes_rcvd;
-	int      bytes_read, bytes_sent;
+	int     bytes_rcvd;
+	int     bytes_read, bytes_sent;
 	const char     *pContentType;
 	struct S_ThreadData *pData = (struct S_ThreadData *)  lpParam;
 	int      iHttpStatus=HTTP_BADREQUEST;
@@ -762,7 +762,7 @@ THREAD_RET WINAPI HttpTransferThread(void * lpParam)
 		UWEB_VERSION,
 		pData->qwFileSize,
 		pContentType);
-	send(pData->skt, pData->buf, strlen(pData->buf), 0);
+	send(pData->skt, pData->buf, (int) strlen(pData->buf), 0);
 	LogTransfer(pData, LOG_BEGIN, 0);
 
 	if (pData->request == HTTP_GET)
@@ -1020,7 +1020,7 @@ char sbuf[MAX_PATH];
 } // Setup 
 
 
-void Cleaup (void)
+void Cleanup (void)
 {
        ManageTerminatedThreads (); // free terminated threads resources
        closesocket(ListenSocket);
